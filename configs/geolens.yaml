@@ -1,0 +1,71 @@
+# GeoLens training configuration (Refractive Lens)
+# 折射透镜训练配置
+
+# 继承默认配置
+_extends: default.yaml
+
+# =============================================================================
+# 训练模式配置
+# =============================================================================
+training:
+  # scratch_two_stage: 从0创建并执行两阶段训练
+  # existing_two_stage: 从现成透镜开始并执行两阶段训练
+  # existing_finetune_only: 从现成透镜开始，跳过阶段1，仅微调
+  mode: "scratch_two_stage"
+
+  # 现成透镜默认路径（用于 existing_* 模式）
+  existing_lens_path: "/Users/lilin/Desktop/deeplens backup/results/tutorial_0207-184619/final_lens.json"
+
+# =============================================================================
+# 透镜来源配置
+# =============================================================================
+lens:
+  source: "create"  # "file" 或 "create"
+  file_path: null   # 保留兼容
+
+  # 如果从头创建
+  design:
+    foclen: 8.0
+    fov: 80.0
+    fnum: 2.0
+    flange: 1.0
+    thickness: 10.0
+    lens_type:
+      - ["Aperture"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+
+# =============================================================================
+# 优化配置
+# =============================================================================
+optimization:
+  # 阶段1: 课程学习
+  curriculum:
+    # 学习率配置 [d, c, k, ai]
+    lrs: [0.001, 0.001, 0.01, 0.001]
+    decay: 0.01
+
+    # 训练配置
+    iterations: 2000
+    test_per_iter: 50
+
+    # 优化选项
+    optim_mat: true
+    match_mat: false
+    shape_control: true
+
+  # 阶段2: 微调
+  finetune:
+    # 如果未显式给 lrs，则会用 curriculum.lrs * lr_multiplier
+    lr_multiplier: 0.1
+    decay: 0.01
+
+    iterations: 1200
+    test_per_iter: 50
+
+    centroid: false
+    optim_mat: false
+    shape_control: true

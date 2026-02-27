@@ -1,0 +1,30 @@
+--- /Users/lilin/Desktop/hybrid_lens_design/scripts/train_e2e.py
++++ /Users/lilin/Desktop/hybrid_lens_design/scripts/train_e2e.py
+@@ -37,6 +37,8 @@
+     )
+ 
+     # Override config options
++    parser.add_argument("--start_epoch", type=int, default=0, help="Epoch to start from (for resuming)")
++    parser.add_argument("--pretrained", type=str, help="Path to pretrained network weights")
+     parser.add_argument("--epochs", type=int, help="Number of training epochs")
+     parser.add_argument("--batch_size", type=int, help="Batch size")
+     parser.add_argument("--network_lr", type=float, help="Network learning rate")
+@@ -69,6 +71,10 @@
+     # Override config with command line arguments
+     if args.hybridlens:
+         config.lens.file_path = args.hybridlens
++    if args.pretrained:
++        set_nested(config, "network.pretrained", args.pretrained)
++    if args.start_epoch:
++        config.optimization.start_epoch = args.start_epoch
+     if args.dataset:
+         config.dataset.train_path = args.dataset
+     if args.epochs:
+@@ -194,6 +200,7 @@
+         network_lr=config.optimization.network_lr,
+         lr_decay=config.optimization.lr_decay,
+         epochs=config.optimization.epochs,
++        start_epoch=getattr(config.optimization, "start_epoch", 0),
+         batch_size=config.optimization.batch_size,
+         test_per_epoch=config.optimization.test_per_epoch,
+         spp=getattr(config.optimization, "spp", 100000),

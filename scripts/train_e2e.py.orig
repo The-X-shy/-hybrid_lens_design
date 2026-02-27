@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""
+Train End-to-End System (HybridLens + Neural Network)
+训练端到端系统（混合透镜 + 神经网络）
+
+Usage:
+    python scripts/train_e2e.py --config configs/e2e.yaml
+    python scripts/train_e2e.py --hybridlens results/hybridlens/final.json --dataset ./datasets/DIV2K
+"""
+
+import argparse
+import sys
+from pathlib import Path
+import os
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+import torch
+from src.utils.config import (
+    load_config,
+    create_result_dir,
+    get_device,
+    set_seed,
+    set_nested,
+    get_nested,
+)
+from src.e2e.trainer import E2ETrainer
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Train End-to-End HybridLens + Neural Network"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/e2e.yaml",
+        help="Path to config file",
+    )
+    parser.add_argument(
+        "--hybridlens",
+        type=str,
+        help="Path to optimized HybridLens JSON file (overrides config)",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        help="Path to training dataset directory",
+    )
+
+    # Override config options
+    parser.add_argument("--epochs", type=int, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, help="Batch size")
+    parser.add_argument("--network_lr", type=float, help="Network learning rate")
+    parser.add_argument("--doe_lr", type=float, help="DOE learning rate")
+    parser.add_argument(
+        "--freeze_doe",
+        type=int,
+        choices=[0, 1],
+        help="Freeze DOE parameters in E2E stage (1=true, 0=false)",
+    )
+    parser.add_argument(
+        "--network_type",
+        type=str,
+        choices=["unet", "mha_unet"],
+        help="Network type for E2E reconstruction",
+    )
+    parser.add_argument(
+        "--wavelength",
+        type=float,
+        help="Single wavelength used in E2E PSF/rendering (um)",
+    )
+    parser.add_argument("--output_dir", type=str, help="Output directory")
+    parser.add_argument("--seed", type=int, help="Random seed")
+    parser.add_argument(
+        "--device", type=str, choices=["cuda", "cpu", "mps"], help="Device"
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Load config
+    config = load_config(args.config)
+
+    # Override config with command line arguments
+    if args.hybridlens:
+        config.lens.file_path = args.hybridlens
+    if args.dataset:
+        config.dataset.train_path = args.dataset
+    if args.epochs:
+        config.optimization.epochs = args.epochs
+    if args.batch_size:
+        config.optimization.batch_size = args.batch_size
+    if args.network_lr:
+        config.optimization.network_lr = args.network_lr
+    if args.doe_lr:
+        config.optimization.doe_lr = args.doe_lr
+    if args.freeze_doe is not None:
+        set_nested(config, "optimization.freeze_doe", bool(args.freeze_doe))
+    if args.network_type:
+        set_nested(config, "network.type", args.network_type)
+    if args.wavelength:
+        set_nested(config, "optimization.wavelength", float(args.wavelength))
+    if args.output_dir:
+        set_nested(config, "output.dir", args.output_dir)
+    if args.seed:
+        config.seed = args.seed
+
+    # Set seed
+    seed = getattr(config, "seed", 42)
+    set_seed(seed)
+
+    # Set device
+    device = get_device(config) if not args.device else torch.device(args.device)
+
+    print("=" * 60)
+    print("End-to-End Training (HybridLens + Neural Network)")
+    print("=" * 60)
+    print(f"Config: {args.config}")
+    print(f"Device: {device}")
+    print(f"HybridLens source: {config.lens.file_path}")
+    print(f"Network type: {config.network.type}")
+    print(f"Training dataset: {config.dataset.train_path}")
+    print(f"Freeze DOE: {get_nested(config, 'optimization.freeze_doe', True)}")
+    print(f"Wavelength: {get_nested(config, 'optimization.wavelength', 0.55)} um")
+
+    # Create result directory
+    result_dir = create_result_dir(config)
+
+    # Network config
+    network_config = {
+        "type": config.network.type,
+        "in_channels": config.network.in_channels,
+        "out_channels": config.network.out_channels,
+    }
+    if hasattr(config.network, "features"):
+        network_config["features"] = config.network.features
+    if hasattr(config.network, "mha"):
+        network_config["mha"] = (
+            config.network.mha.to_dict()
+            if hasattr(config.network.mha, "to_dict")
+            else config.network.mha
+        )
+    if hasattr(config.network, "pretrained") and config.network.pretrained:
+        network_config["pretrained"] = config.network.pretrained
+
+    # Create trainer
+    trainer = E2ETrainer.from_hybridlens(
+        hybridlens_path=config.lens.file_path,
+        result_dir=str(result_dir),
+        network_config=network_config,
+        freeze_doe=get_nested(config, "optimization.freeze_doe", True),
+        wavelength=get_nested(config, "optimization.wavelength", 0.55),
+        device=device,
+    )
+
+    # Get loss weights
+    loss_weights = {
+        "mse": config.optimization.loss_weights.mse,
+        "lpips": config.optimization.loss_weights.lpips,
+        "psf": config.optimization.loss_weights.psf,
+    }
+
+    # Get dataset paths
+    train_path = config.dataset.train_path
+    val_path = getattr(config.dataset, "val_path", None)
+    image_size = tuple(config.dataset.image_size)
+
+    # Auto-download BSDS300 if requested paths do not exist
+    if not os.path.exists(train_path):
+        if "BSDS300" in train_path:
+            print(f"Dataset path not found: {train_path}")
+            print("Attempting to download BSDS300...")
+            from deeplens.network.dataset import download_bsd300
+
+            output_image_dir = download_bsd300("./datasets")
+            candidate_train = os.path.join(output_image_dir, "train", "images")
+            candidate_test = os.path.join(output_image_dir, "test", "images")
+            if not os.path.exists(candidate_train):
+                candidate_train = os.path.join(output_image_dir, "train")
+            if not os.path.exists(candidate_test):
+                candidate_test = os.path.join(output_image_dir, "test")
+            if os.path.exists(candidate_train):
+                train_path = candidate_train
+                config.dataset.train_path = train_path
+            if not val_path and os.path.exists(candidate_test):
+                val_path = candidate_test
+                config.dataset.val_path = val_path
+            elif val_path and not os.path.exists(val_path) and os.path.exists(candidate_test):
+                val_path = candidate_test
+                config.dataset.val_path = val_path
+            print(f"BSDS300 ready. train={train_path}, val={val_path}")
+        else:
+            raise FileNotFoundError(f"Training dataset path not found: {train_path}")
+
+    # Train
+    loss_history = trainer.train(
+        train_dataset_path=train_path,
+        val_dataset_path=val_path,
+        doe_lr=config.optimization.doe_lr,
+        lens_lr=config.optimization.lens_lr,
+        network_lr=config.optimization.network_lr,
+        lr_decay=config.optimization.lr_decay,
+        epochs=config.optimization.epochs,
+        batch_size=config.optimization.batch_size,
+        test_per_epoch=config.optimization.test_per_epoch,
+        spp=getattr(config.optimization, "spp", 100000),
+        psf_size=getattr(config.optimization, "psf_size", 101),
+        image_size=image_size,
+        loss_weights=loss_weights,
+        freeze_doe=get_nested(config, "optimization.freeze_doe", True),
+        wavelength=get_nested(config, "optimization.wavelength", 0.55),
+        early_stop_config=get_nested(config, "optimization.early_stop", None),
+    )
+
+    # Print final results
+    print("\n" + "=" * 60)
+    print("Training Results")
+    print("=" * 60)
+    print(f"Initial total loss: {loss_history['total'][0]:.6f}")
+    print(f"Final total loss: {loss_history['total'][-1]:.6f}")
+    improvement = (1 - loss_history["total"][-1] / loss_history["total"][0]) * 100
+    print(f"Improvement: {improvement:.1f}%")
+    print(f"Output saved to: {result_dir}")
+
+
+if __name__ == "__main__":
+    main()

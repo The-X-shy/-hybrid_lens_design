@@ -1,0 +1,78 @@
+# End-to-End training configuration (HybridLens + UNet)
+# 端到端优化配置 (光学系统 + 神经网络后处理)
+
+# 继承默认配置
+_extends: default.yaml
+
+# =============================================================================
+# 输入透镜配置
+# =============================================================================
+lens:
+  # 使用混合透镜
+  source: "file"
+  file_path: "./results/hybridlens/hybridlens_final.json"
+
+# =============================================================================
+# 神经网络配置
+# =============================================================================
+network:
+  # 网络架构
+  type: "mha_unet"     # 多头注意力 + UNet 后处理网络
+  
+  # UNet 配置
+  in_channels: 3       # RGB 输入
+  out_channels: 3      # RGB 输出
+  features: [64, 128, 256, 512]  # 特征通道数
+
+  # MHA 前端配置（type=mha_unet 时生效）
+  mha:
+    embed_dim: 64
+    num_heads: 4
+    ff_dim: 128
+    dropout: 0.0
+  
+  # 预训练权重
+  pretrained: null     # 预训练权重路径 (可选)
+
+# =============================================================================
+# 优化配置
+# =============================================================================
+optimization:
+  # DOE 学习率
+  doe_lr: 0.1
+  
+  # 神经网络学习率
+  network_lr: 0.0001
+  
+  # 折射透镜学习率 [d, c, k, ai]
+  lens_lr: [0.0001, 0.0001, 0.01, 0.00001]
+  lr_decay: 0.01
+
+  # 端到端阶段约束
+  freeze_doe: true
+  wavelength: 0.55
+  
+  # 训练配置
+  epochs: 100          # 训练轮数
+  batch_size: 4        # 批大小
+  test_per_epoch: 1    # 每轮评估一次
+  
+  # 损失函数权重
+  loss_weights:
+    mse: 1.0           # MSE 损失
+    lpips: 0.1         # LPIPS 感知损失
+    psf: 0.01          # PSF 损失
+
+# =============================================================================
+# 数据集配置
+# =============================================================================
+dataset:
+  train_path: "./datasets/DIV2K/train"
+  val_path: "./datasets/DIV2K/valid"
+  image_size: [256, 256]
+  
+  # 数据增强
+  augmentation:
+    random_crop: true
+    random_flip: true
+    color_jitter: false

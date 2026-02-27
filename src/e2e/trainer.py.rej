@@ -1,0 +1,10 @@
+--- trainer.py
++++ trainer.py
+@@ -342,6 +342,7 @@
+         network_lr: float = 1e-4,
+         lr_decay: Optional[float] = None,
+         epochs: int = 1000,
++        start_epoch: int = 0,
+         batch_size: int = 4,
+         test_per_epoch: int = 10,
+         spp: int = 100000,

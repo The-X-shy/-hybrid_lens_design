@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+
+# Build/cache
+.pytest_cache/
+.mypy_cache/
+
+# Project runtime artifacts
+outputs/
+results/
+tmp/
+
+# Local linked dependencies
+datasets
+deeplens
+
+# LaTeX temporary files
+*.aux
+*.log
+*.out
+*.toc
+*.blg
+*.synctex.gz
+
+# Notebook checkpoints
+.ipynb_checkpoints/

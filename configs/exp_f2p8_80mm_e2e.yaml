@@ -1,0 +1,37 @@
+_extends: e2e.yaml
+
+seed: 42
+device: "cuda"
+dtype: "float64"
+
+lens:
+  source: "file"
+  file_path: "/root/autodl-tmp/hybrid_lens_design/results/f2p8_80mm/02_hybrid/hybrid_final.json"
+
+network:
+  type: "mha_unet"
+  in_channels: 3
+  out_channels: 3
+  mha:
+    embed_dim: 64
+    num_heads: 4
+    ff_dim: 128
+    dropout: 0.0
+
+optimization:
+  epochs: 5000
+  batch_size: 2
+  test_per_epoch: 5
+  freeze_doe: true
+  wavelength: 0.55
+  early_stop:
+    enabled: true
+    patience: 500
+    min_delta: 1.0e-6
+    mode: "min"
+    monitor: "total"
+
+dataset:
+  train_path: "/root/autodl-tmp/DeepLens/datasets/BSDS300/images/train/images"
+  val_path: "/root/autodl-tmp/DeepLens/datasets/BSDS300/images/test/images"
+  image_size: [256, 256]

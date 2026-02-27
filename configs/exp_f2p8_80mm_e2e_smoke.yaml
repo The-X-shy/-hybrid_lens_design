@@ -1,0 +1,27 @@
+_extends: exp_f2p8_80mm_e2e.yaml
+
+optimization:
+  doe_lr: 0.1
+  network_lr: 0.0001
+  lens_lr: [0.0001, 0.0001, 0.01, 0.00001]
+  lr_decay: 0.01
+  epochs: 100
+  batch_size: 8
+  test_per_epoch: 10
+  freeze_doe: true
+  wavelength: 0.55
+  early_stop:
+    enabled: true
+    patience: 500
+    min_delta: 1.0e-6
+    mode: "min"
+    monitor: "total"
+  loss_weights:
+    mse: 1.0
+    lpips: 0.0
+    psf: 0.0
+
+dataset:
+  train_path: "/root/autodl-tmp/DeepLens/datasets/BSDS300_smoke/images/train/images"
+  val_path: "/root/autodl-tmp/DeepLens/datasets/BSDS300_smoke/images/test/images"
+  image_size: [128, 128]

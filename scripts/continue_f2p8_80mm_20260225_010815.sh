@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="/root/autodl-tmp/hybrid_lens_design"
+TS="20260225_010815"
+RUN_LOG="${ROOT}/outputs/f2p8_80mm_run_${TS}.log"
+FULL_ROOT="${ROOT}/results/f2p8_80mm_${TS}"
+SMOKE_ROOT="${ROOT}/results/f2p8_80mm_smoke_${TS}"
+PY="/root/miniconda3/bin/python"
+
+echo "[INFO] Full Training: E2E (resume3)" | tee -a "${RUN_LOG}"
+"${PY}" "${ROOT}/scripts/train_e2e.py" \
+  --config "${ROOT}/configs/exp_f2p8_80mm_e2e_fullsafe.yaml" \
+  --hybridlens "${FULL_ROOT}/02_hybrid/hybrid_final.json" \
+  --epochs 5000 \
+  --freeze_doe 1 \
+  --network_type mha_unet \
+  --output_dir "${FULL_ROOT}/03_e2e" >> "${RUN_LOG}" 2>&1
+
+echo "[INFO] Evaluating E2E Image Metrics (PSNR, SSIM, LPIPS)" | tee -a "${RUN_LOG}"
+"${PY}" "${ROOT}/scripts/evaluate_e2e.py" \
+  --config "${ROOT}/configs/exp_f2p8_80mm_e2e_fullsafe.yaml" \
+  --checkpoint "${FULL_ROOT}/03_e2e/network_epochfinal.pth" \
+  --hybridlens "${FULL_ROOT}/02_hybrid/hybrid_final.json" \
+  --output_dir "${FULL_ROOT}/03_e2e" >> "${RUN_LOG}" 2>&1
+
+
+echo "[INFO] Full Training: Metasurface" | tee -a "${RUN_LOG}"
+"${PY}" "${ROOT}/scripts/train_metalens.py" \
+  --config "${ROOT}/configs/exp_f2p8_80mm_meta.yaml" \
+  --geolens "${FULL_ROOT}/01_geolens/final_lens.json" \
+  --iterations 1000 \
+  --output_dir "${FULL_ROOT}/04_meta" >> "${RUN_LOG}" 2>&1
+
+echo "[INFO] Generate markdown log document..." | tee -a "${RUN_LOG}"
+"${PY}" "${ROOT}/scripts/generate_training_log.py" \
+  --experiment_name "f2p8_80mm_${TS}" \
+  --base_dir "${FULL_ROOT}" \
+  --smoke_dir "${SMOKE_ROOT}" \
+  --output "${ROOT}/outputs/training_log_f2p8_80mm_${TS}.md" >> "${RUN_LOG}" 2>&1
+
+echo "[INFO] Generate checksum manifest..." | tee -a "${RUN_LOG}"
+(
+  cd "${FULL_ROOT}"
+  find . -type f -print0 | sort -z | xargs -0 sha256sum > "${ROOT}/outputs/sha256_manifest_f2p8_80mm_${TS}.txt"
+) >> "${RUN_LOG}" 2>&1
+
+echo "[DONE] Workflow completed." | tee -a "${RUN_LOG}"
+echo "[DONE] Smoke root: ${SMOKE_ROOT}" | tee -a "${RUN_LOG}"
+echo "[DONE] Full root:  ${FULL_ROOT}" | tee -a "${RUN_LOG}"
+echo "[DONE] Doc:        ${ROOT}/outputs/training_log_f2p8_80mm_${TS}.md" | tee -a "${RUN_LOG}"
+echo "[DONE] Run log:    ${RUN_LOG}" | tee -a "${RUN_LOG}"

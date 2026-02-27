@@ -1,0 +1,858 @@
+"""
+End-to-End Trainer - Joint Optimization of HybridLens and Neural Network
+端到端训练器 - 混合透镜与神经网络联合优化
+
+Based on: Xinge Yang et al., "End-to-End Hybrid Refractive-Diffractive Lens Design
+with Differentiable Ray-Wave Model," SIGGRAPH Asia 2024.
+
+This trainer jointly optimizes:
+1. HybridLens (refractive lens + DOE)
+2. Neural network (UNet for image reconstruction/deblurring)
+
+The goal is to optimize the optical system and neural network together to achieve
+better image quality than optimizing them separately.
+"""
+
+import os
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from tqdm import tqdm
+from torchvision.utils import save_image
+
+# DeepLens imports
+from deeplens.hybridlens import HybridLens
+from deeplens.optics.loss import PSFLoss
+from deeplens.network.reconstruction.unet import UNet
+from deeplens.network.dataset import PhotographicDataset
+
+from src.e2e.networks import MHAUNet
+from src.utils.stage_logger import StageLogger
+from src.utils.early_stop import EarlyStopper
+
+
+class E2ETrainer:
+    """
+    End-to-end trainer for joint optimization of HybridLens and neural network.
+    混合透镜与神经网络联合优化的端到端训练器
+    """
+
+    def __init__(
+        self,
+        hybrid_lens: HybridLens,
+        network: nn.Module,
+        result_dir: str,
+        freeze_doe: bool = True,
+        wavelength: float = 0.55,
+        device: torch.device = None,
+    ):
+        """
+        Initialize the E2E trainer.
+
+        Args:
+            hybrid_lens: HybridLens object to train
+            network: Neural network for image reconstruction
+            result_dir: Directory to save results
+            device: PyTorch device
+        """
+        self.hybrid_lens = hybrid_lens
+        self.network = network
+        self.result_dir = Path(result_dir)
+        self.result_dir.mkdir(parents=True, exist_ok=True)
+        self.freeze_doe = freeze_doe
+        self.wavelength = wavelength
+
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
+
+        # Keep reconstruction network in float32 for stable conv/attention ops,
+        # while HybridLens stays in float64 for wave-optics simulation.
+        self.network = self.network.to(device=self.device, dtype=torch.float32)
+        self.logger = StageLogger(
+            result_dir=str(self.result_dir),
+            stage="e2e",
+            mode="freeze_doe" if self.freeze_doe else "joint",
+            wavelength=self.wavelength,
+        )
+
+    @classmethod
+    def from_hybridlens(
+        cls,
+        hybridlens_path: str,
+        result_dir: str,
+        network_config: Dict[str, Any] = None,
+        freeze_doe: bool = True,
+        wavelength: float = 0.55,
+        device: torch.device = None,
+    ) -> "E2ETrainer":
+        """
+        Create trainer from an optimized HybridLens file.
+        从优化后的 HybridLens 文件创建训练器
+
+        Args:
+            hybridlens_path: Path to the optimized HybridLens JSON file
+            result_dir: Directory to save results
+            network_config: Network configuration dict
+            device: PyTorch device
+        """
+        from src.utils.config import get_device
+
+        if device is None:
+            device = get_device(None)
+
+        result_dir = Path(result_dir)
+        result_dir.mkdir(parents=True, exist_ok=True)
+
+        # Set double precision for phase calculation
+        torch.set_default_dtype(torch.float64)
+
+        # Load HybridLens
+        hybrid_lens = HybridLens(filename=hybridlens_path, dtype=torch.float64)
+
+        # Refocus to infinity
+        hybrid_lens.refocus(foc_dist=-10000.0)
+
+        # Default network config
+        if network_config is None:
+            network_config = {
+                "type": "UNet",
+                "in_channels": 3,
+                "out_channels": 3,
+            }
+
+        # Create neural network
+        network = cls._create_network(network_config)
+
+        return cls(
+            hybrid_lens=hybrid_lens,
+            network=network,
+            result_dir=str(result_dir),
+            freeze_doe=freeze_doe,
+            wavelength=wavelength,
+            device=device,
+        )
+
+    @classmethod
+    def from_config(cls, config) -> "E2ETrainer":
+        """
+        Create trainer from configuration.
+        从配置创建训练器
+        """
+        from src.utils.config import create_result_dir, get_device
+
+        result_dir = create_result_dir(config)
+        device = get_device(config)
+
+        # Load HybridLens path
+        hybridlens_path = config.lens.file_path
+
+        # Network config from yaml
+        network_config = {
+            "type": config.network.type,
+            "in_channels": config.network.in_channels,
+            "out_channels": config.network.out_channels,
+        }
+        if hasattr(config.network, "features"):
+            network_config["features"] = config.network.features
+        if hasattr(config.network, "mha"):
+            network_config["mha"] = (
+                config.network.mha.to_dict()
+                if hasattr(config.network.mha, "to_dict")
+                else config.network.mha
+            )
+        if hasattr(config.network, "pretrained") and config.network.pretrained:
+            network_config["pretrained"] = config.network.pretrained
+
+        freeze_doe = getattr(config.optimization, "freeze_doe", True)
+        wavelength = getattr(config.optimization, "wavelength", 0.55)
+
+        return cls.from_hybridlens(
+            hybridlens_path=hybridlens_path,
+            result_dir=str(result_dir),
+            network_config=network_config,
+            freeze_doe=freeze_doe,
+            wavelength=wavelength,
+            device=device,
+        )
+
+    @staticmethod
+    def _create_network(network_config: Dict[str, Any]) -> nn.Module:
+        """
+        Create neural network from configuration.
+        从配置创建神经网络
+        """
+        network_type = network_config.get("type", "UNet").lower()
+        in_channels = network_config.get("in_channels", 3)
+        out_channels = network_config.get("out_channels", 3)
+
+        if network_type == "unet":
+            network = UNet(in_channels=in_channels, out_channels=out_channels)
+        elif network_type == "mha_unet":
+            mha_cfg = network_config.get("mha", {})
+            network = MHAUNet(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                embed_dim=int(mha_cfg.get("embed_dim", 64)),
+                num_heads=int(mha_cfg.get("num_heads", 4)),
+                ff_dim=int(mha_cfg.get("ff_dim", 128))
+                if mha_cfg.get("ff_dim", None) is not None
+                else None,
+                dropout=float(mha_cfg.get("dropout", 0.0)),
+            )
+        else:
+            raise ValueError(f"Unsupported network type: {network_type}")
+
+        # Load pretrained weights if specified
+        if "pretrained" in network_config and network_config["pretrained"]:
+            pretrained_path = network_config["pretrained"]
+            if os.path.exists(pretrained_path):
+                network.load_state_dict(torch.load(pretrained_path, weights_only=True))
+                print(f"Loaded pretrained weights from: {pretrained_path}")
+
+        return network
+
+    def setup_sensor(
+        self, match_aperture: bool = True, sensor_res: Tuple[int, int] = (2000, 2000)
+    ):
+        """
+        Setup sensor size to match aperture.
+        设置传感器大小以匹配光圈
+        """
+        if match_aperture:
+            aper_r = self.hybrid_lens.geolens.surfaces[
+                self.hybrid_lens.geolens.aper_idx
+            ].r
+            new_sensor_size = (2 * aper_r, 2 * aper_r)
+            self.hybrid_lens.set_sensor(
+                sensor_size=new_sensor_size, sensor_res=sensor_res
+            )
+            self.hybrid_lens.geolens.set_sensor(
+                sensor_size=new_sensor_size, sensor_res=sensor_res
+            )
+
+    def _simulate_image(
+        self,
+        clean_image: torch.Tensor,
+        psf: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Simulate degraded image by convolving with PSF.
+        通过与 PSF 卷积模拟退化图像
+
+        Args:
+            clean_image: Clean image tensor [B, C, H, W]
+            psf: PSF tensor [ks, ks]
+
+        Returns:
+            Degraded image tensor [B, C, H, W]
+        """
+        # Prepare PSF for convolution
+        psf = psf.unsqueeze(0).unsqueeze(0)  # [1, 1, ks, ks]
+        psf = psf.repeat(3, 1, 1, 1)  # [3, 1, ks, ks]
+        psf = psf.float()
+
+        # Pad image for convolution
+        pad_size = psf.shape[-1] // 2
+        padded_image = F.pad(clean_image, [pad_size] * 4, mode="reflect")
+
+        # Convolve each channel
+        degraded = F.conv2d(
+            padded_image,
+            psf,
+            groups=3,
+            padding=0,
+        )
+
+        return degraded
+
+    @staticmethod
+    def _flatten_param_groups(param_groups: List[Dict[str, Any]]) -> List[torch.Tensor]:
+        params: List[torch.Tensor] = []
+        for group in param_groups:
+            group_params = group.get("params", [])
+            if isinstance(group_params, torch.Tensor):
+                params.append(group_params)
+            else:
+                params.extend(list(group_params))
+        return params
+
+    def _get_doe_trainable_params(self, doe_lr: float) -> List[torch.Tensor]:
+        try:
+            param_groups = self.hybrid_lens.doe.get_optimizer_params(lr=doe_lr)
+            return self._flatten_param_groups(param_groups)
+        except Exception:
+            return []
+
+    def _capture_doe_state(self) -> Dict[str, torch.Tensor]:
+        state = {}
+        candidate_keys = ["alpha2", "alpha4", "alpha6", "alpha8", "alpha10", "phase_map"]
+        for key in candidate_keys:
+            if hasattr(self.hybrid_lens.doe, key):
+                value = getattr(self.hybrid_lens.doe, key)
+                if isinstance(value, torch.Tensor):
+                    state[key] = value.detach().cpu().clone()
+        return state
+
+    @staticmethod
+    def _build_early_stopper(
+        early_stop_config: Optional[Dict[str, Any]],
+        default_mode: str = "min",
+    ) -> EarlyStopper:
+        cfg = early_stop_config or {}
+        return EarlyStopper(
+            enabled=bool(cfg.get("enabled", False)),
+            patience=int(cfg.get("patience", 500)),
+            min_delta=float(cfg.get("min_delta", 1e-6)),
+            mode=str(cfg.get("mode", default_mode)),
+        )
+
+    def train(
+        self,
+        train_dataset_path: str,
+        val_dataset_path: str = None,
+        doe_lr: float = 0.1,
+        lens_lr: List[float] = [1e-4, 1e-4, 1e-2, 1e-5],
+        network_lr: float = 1e-4,
+        lr_decay: float = 0.01,
+        epochs: int = 100,
+        batch_size: int = 4,
+        test_per_epoch: int = 1,
+        spp: int = 1000000,
+        psf_size: int = 101,
+        image_size: Tuple[int, int] = (256, 256),
+        loss_weights: Dict[str, float] = None,
+        freeze_doe: Optional[bool] = None,
+        wavelength: Optional[float] = None,
+        early_stop_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, List[float]]:
+        """
+        Train the E2E system by jointly optimizing HybridLens and neural network.
+        通过联合优化 HybridLens 和神经网络来训练端到端系统
+
+        Args:
+            train_dataset_path: Path to training dataset
+            val_dataset_path: Path to validation dataset (optional)
+            doe_lr: Learning rate for DOE parameters
+            lens_lr: Learning rates [d, c, k, ai] for lens parameters
+            network_lr: Learning rate for neural network
+            lr_decay: Learning rate decay
+            epochs: Number of training epochs
+            batch_size: Batch size
+            test_per_epoch: Evaluation interval (epochs)
+            spp: Samples per pixel for PSF calculation
+            psf_size: PSF patch size
+            image_size: Training image size
+            loss_weights: Weights for different loss terms
+            freeze_doe: Whether to freeze DOE parameters during E2E training
+            wavelength: Single wavelength used for PSF/rendering
+            early_stop_config: Early stop settings
+
+        Returns:
+            Dictionary of loss histories
+        """
+        hybrid_lens = self.hybrid_lens
+        network = self.network
+        freeze_doe = self.freeze_doe if freeze_doe is None else freeze_doe
+        wavelength = self.wavelength if wavelength is None else wavelength
+        self.freeze_doe = freeze_doe
+        self.wavelength = wavelength
+        self.logger.mode = "freeze_doe" if freeze_doe else "joint"
+        self.logger.wavelength = wavelength
+
+        # Default loss weights
+        if loss_weights is None:
+            loss_weights = {
+                "mse": 1.0,
+                "lpips": 0.1,
+                "psf": 0.01,
+            }
+
+        # Create dataset and dataloader
+        train_dataset = PhotographicDataset(
+            img_dir=train_dataset_path,
+            img_res=image_size,
+            is_train=True,
+        )
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True,
+        )
+
+        if val_dataset_path:
+            val_dataset = PhotographicDataset(
+                img_dir=val_dataset_path,
+                img_res=image_size,
+                is_train=False,
+            )
+            val_loader = torch.utils.data.DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=4,
+            )
+        else:
+            val_loader = None
+
+        # Create optimizers
+        doe_state_before = self._capture_doe_state()
+        if freeze_doe:
+            doe_params = self._get_doe_trainable_params(doe_lr=doe_lr)
+            for p in doe_params:
+                p.requires_grad = False
+            lens_param_groups = hybrid_lens.geolens.get_optimizer_params(
+                lrs=lens_lr,
+                decay=lr_decay,
+                optim_mat=False,
+            )
+            lens_optimizer = torch.optim.Adam(lens_param_groups)
+        else:
+            doe_params = self._get_doe_trainable_params(doe_lr=doe_lr)
+            for p in doe_params:
+                p.requires_grad = True
+            lens_optimizer = hybrid_lens.get_optimizer(
+                doe_lr=doe_lr,
+                lens_lr=lens_lr,
+                lr_decay=lr_decay,
+            )
+
+        # Network optimizer
+        network_optimizer = torch.optim.Adam(
+            network.parameters(),
+            lr=network_lr,
+        )
+
+        # Learning rate schedulers
+        lens_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            lens_optimizer, T_max=epochs
+        )
+        network_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            network_optimizer, T_max=epochs
+        )
+
+        # Loss functions
+        mse_loss_fn = nn.MSELoss()
+        psf_loss_fn = PSFLoss()
+
+        # Try to load LPIPS if available
+        try:
+            import lpips
+
+            lpips_loss_fn = lpips.LPIPS(net="alex").to(self.device)
+            use_lpips = True
+        except ImportError:
+            print("Warning: LPIPS not available, using MSE only")
+            lpips_loss_fn = None
+            use_lpips = False
+
+        # Training configuration
+        print("=" * 60)
+        print("Starting End-to-End Joint Optimization")
+        print("=" * 60)
+        print(f"Network type: {type(network).__name__}")
+        print(f"Training images: {len(train_dataset)}")
+        print(f"Batch size: {batch_size}")
+        print(f"Epochs: {epochs}")
+        print(f"PSF size: {psf_size}x{psf_size}")
+        print(f"Wavelength: {wavelength} um")
+        print(f"Freeze DOE: {freeze_doe}")
+        print(f"Loss weights: {loss_weights}")
+
+        self.logger.log_event(
+            event="train_start",
+            payload={
+                "train_dataset_path": train_dataset_path,
+                "val_dataset_path": val_dataset_path,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "network_lr": network_lr,
+                "doe_lr": doe_lr,
+                "lens_lr": lens_lr,
+                "lr_decay": lr_decay,
+                "spp": spp,
+                "psf_size": psf_size,
+                "wavelength": wavelength,
+                "freeze_doe": freeze_doe,
+            },
+        )
+        early_stopper = self._build_early_stopper(early_stop_config, default_mode="min")
+        monitor_key = str((early_stop_config or {}).get("monitor", "total"))
+        if early_stopper.enabled:
+            self.logger.log_event(
+                event="early_stop_enabled",
+                payload={
+                    "patience": early_stopper.patience,
+                    "min_delta": early_stopper.min_delta,
+                    "mode": early_stopper.mode,
+                    "monitor": monitor_key,
+                },
+            )
+
+        # Record loss history
+        loss_history = {
+            "total": [],
+            "mse": [],
+            "lpips": [],
+            "psf": [],
+        }
+        min_coherent_spp = 1_000_000
+        effective_spp = max(int(spp), min_coherent_spp)
+        psf_refresh_epochs = max(1, int(test_per_epoch))
+        cached_psf = None
+        cached_psf_loss = None
+
+        # Training loop
+        for epoch in range(start_epoch, epochs):
+            network.train()
+            epoch_losses = {"total": 0, "mse": 0, "lpips": 0, "psf": 0}
+            num_batches = 0
+            if cached_psf is None or (epoch % psf_refresh_epochs == 0):
+                with torch.no_grad():
+                    cached_psf = hybrid_lens.psf(
+                        points=[0.0, 0.0, -10000.0],
+                        ks=psf_size,
+                        wvln=wavelength,
+                        spp=effective_spp,
+                    )
+                    if loss_weights.get("psf", 0) > 0:
+                        psf_input = cached_psf.unsqueeze(0).unsqueeze(0)
+                        if psf_input.shape[1] == 1:
+                            psf_input = psf_input.repeat(1, 3, 1, 1)
+                        cached_psf_loss = psf_loss_fn(psf_input).detach()
+                    else:
+                        cached_psf_loss = None
+
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}")
+            for batch in pbar:
+                # Get clean images
+                if isinstance(batch, dict):
+                    clean_images = batch["img"].to(self.device)
+                else:
+                    clean_images = batch.to(self.device)
+
+                # Reuse cached PSF to keep training throughput practical while
+                # satisfying coherent ray-tracing sample constraints.
+                psf = cached_psf
+
+                # Simulate degraded images
+                degraded_images = self._simulate_image(clean_images.float(), psf)
+
+                # Reconstruct images with neural network
+                # Note: Network needs float32
+                reconstructed_images = network(degraded_images.float())
+
+                # Calculate losses
+                # MSE loss
+                loss_mse = mse_loss_fn(reconstructed_images, clean_images.float())
+
+                # LPIPS loss
+                if use_lpips and loss_weights.get("lpips", 0) > 0:
+                    loss_lpips = lpips_loss_fn(
+                        reconstructed_images, clean_images.float()
+                    ).mean()
+                else:
+                    loss_lpips = torch.tensor(0.0, device=self.device)
+
+                # PSF loss (encourage compact PSF)
+                if loss_weights.get("psf", 0) > 0:
+                    loss_psf = (
+                        cached_psf_loss.to(self.device)
+                        if cached_psf_loss is not None
+                        else torch.tensor(0.0, device=self.device)
+                    )
+                else:
+                    loss_psf = torch.tensor(0.0, device=self.device)
+
+                # Total loss
+                total_loss = (
+                    loss_weights.get("mse", 1.0) * loss_mse
+                    + loss_weights.get("lpips", 0.1) * loss_lpips
+                    + loss_weights.get("psf", 0.01) * loss_psf
+                )
+
+                # Backward and optimize
+                lens_optimizer.zero_grad()
+                network_optimizer.zero_grad()
+                total_loss.backward()
+                lens_optimizer.step()
+                network_optimizer.step()
+
+                # Record losses
+                epoch_losses["total"] += total_loss.item()
+                epoch_losses["mse"] += loss_mse.item()
+                epoch_losses["lpips"] += loss_lpips.item() if use_lpips else 0
+                epoch_losses["psf"] += loss_psf.item()
+                num_batches += 1
+
+                pbar.set_postfix(
+                    loss=f"{total_loss.item():.4f}",
+                    mse=f"{loss_mse.item():.4f}",
+                )
+
+            # Update learning rates
+            lens_scheduler.step()
+            network_scheduler.step()
+
+            # Average epoch losses
+            for key in epoch_losses:
+                epoch_losses[key] /= num_batches
+                loss_history[key].append(epoch_losses[key])
+
+            print(
+                f"Epoch {epoch + 1}: total={epoch_losses['total']:.4f}, "
+                f"mse={epoch_losses['mse']:.4f}, lpips={epoch_losses['lpips']:.4f}, "
+                f"psf={epoch_losses['psf']:.4f}"
+            )
+            self.logger.log_metric(
+                epoch=epoch + 1,
+                metrics={
+                    "total": float(epoch_losses["total"]),
+                    "mse": float(epoch_losses["mse"]),
+                    "lpips": float(epoch_losses["lpips"]),
+                    "psf": float(epoch_losses["psf"]),
+                },
+                lr={
+                    "lens": float(lens_scheduler.get_last_lr()[0]),
+                    "network": float(network_scheduler.get_last_lr()[0]),
+                },
+                extra={"freeze_doe": freeze_doe, "wavelength": wavelength},
+            )
+            monitor_val = float(epoch_losses.get(monitor_key, epoch_losses["total"]))
+            if early_stopper.update(monitor_val, step=epoch + 1):
+                self.logger.log_event(
+                    event="early_stop_triggered",
+                    payload={
+                        "stop_epoch": epoch + 1,
+                        "best_metric": early_stopper.best,
+                        "metric": monitor_key,
+                    },
+                )
+                print(
+                    f"Early stopping at epoch {epoch + 1}, "
+                    f"best {monitor_key}={early_stopper.best:.6f}"
+                )
+                break
+
+            # Periodic evaluation and saving
+            if (epoch + 1) % test_per_epoch == 0:
+                self._save_checkpoint(epoch + 1, psf_size, spp, wavelength)
+
+                # Validation
+                if val_loader:
+                    val_loss = self._validate(val_loader, psf_size, spp, wavelength)
+                    print(f"Validation MSE: {val_loss:.4f}")
+                    self.logger.log_metric(
+                        epoch=epoch + 1,
+                        metrics={"val_mse": float(val_loss)},
+                        extra={"substage": "validation"},
+                    )
+
+        # Save final model
+        self._save_checkpoint("final", psf_size, spp, wavelength)
+
+        print("\n" + "=" * 60)
+        print("End-to-end optimization complete!")
+        print(f"Initial total loss: {loss_history['total'][0]:.6f}")
+        print(f"Final total loss: {loss_history['total'][-1]:.6f}")
+        improvement = (1 - loss_history["total"][-1] / loss_history["total"][0]) * 100
+        print(f"Improvement: {improvement:.1f}%")
+        print("=" * 60)
+
+        doe_state_after = self._capture_doe_state()
+        doe_change_max = 0.0
+        for key, before_tensor in doe_state_before.items():
+            if key in doe_state_after:
+                after_tensor = doe_state_after[key]
+                if before_tensor.shape == after_tensor.shape:
+                    diff = (after_tensor - before_tensor).abs().max().item()
+                    doe_change_max = max(doe_change_max, float(diff))
+
+        self.logger.flush_summary(
+            {
+                "initial_total_loss": float(loss_history["total"][0])
+                if loss_history["total"]
+                else None,
+                "final_total_loss": float(loss_history["total"][-1])
+                if loss_history["total"]
+                else None,
+                "improvement_percent": float(improvement),
+                "freeze_doe": freeze_doe,
+                "wavelength": float(wavelength),
+                "doe_change_max_abs": float(doe_change_max),
+                "network_type": type(network).__name__,
+            }
+        )
+
+        return loss_history
+
+    def _validate(
+        self,
+        val_loader,
+        psf_size: int,
+        spp: int,
+        wavelength: float,
+    ) -> float:
+        """
+        Validate the model on validation set.
+        在验证集上验证模型
+        """
+        self.network.eval()
+        total_loss = 0
+        num_batches = 0
+
+        mse_loss_fn = nn.MSELoss()
+
+        with torch.no_grad():
+            # Calculate PSF once for validation
+            psf = self.hybrid_lens.psf(
+                points=[0.0, 0.0, -10000.0],
+                ks=psf_size,
+                wvln=wavelength,
+                spp=max(int(spp), 1_000_000),
+            )
+
+            for batch in val_loader:
+                if isinstance(batch, dict):
+                    clean_images = batch["img"].to(self.device)
+                else:
+                    clean_images = batch.to(self.device)
+
+                # Simulate and reconstruct
+                degraded_images = self._simulate_image(clean_images.float(), psf)
+                reconstructed_images = self.network(degraded_images.float())
+
+                # Calculate MSE
+                loss = mse_loss_fn(reconstructed_images, clean_images.float())
+                total_loss += loss.item()
+                num_batches += 1
+
+        return total_loss / num_batches
+
+    def _save_checkpoint(self, epoch, psf_size: int, spp: int, wavelength: float):
+        """Save checkpoint including lens, network, and visualizations."""
+        try:
+            # Save network weights
+            torch.save(
+                self.network.state_dict(),
+                str(self.result_dir / f"network_epoch{epoch}.pth"),
+            )
+
+            # Save lens configuration
+            self.hybrid_lens.write_lens_json(
+                str(self.result_dir / f"hybridlens_epoch{epoch}.json")
+            )
+
+            # Save PSF visualization
+            with torch.no_grad():
+                psf = self.hybrid_lens.psf(
+                    points=[0.0, 0.0, -10000.0],
+                    ks=psf_size,
+                    wvln=wavelength,
+                    spp=max(int(spp), 1_000_000),
+                )
+                psf_vis = psf / psf.max()
+                save_image(
+                    psf_vis.unsqueeze(0).float(),
+                    str(self.result_dir / f"psf_epoch{epoch}.png"),
+                )
+
+        except Exception as e:
+            print(f"Warning: Failed to save checkpoint: {e}")
+
+    def get_hybrid_lens(self) -> HybridLens:
+        """Get the trained hybrid lens."""
+        return self.hybrid_lens
+
+    def get_network(self) -> nn.Module:
+        """Get the trained neural network."""
+        return self.network
+
+    def save_lens(self, filename: str) -> None:
+        """Save lens to file."""
+        self.hybrid_lens.write_lens_json(filename)
+
+    def save_network(self, filename: str) -> None:
+        """Save network weights to file."""
+        torch.save(self.network.state_dict(), filename)
+
+    def load_network(self, filename: str) -> None:
+        """Load network weights from file."""
+        self.network.load_state_dict(
+            torch.load(filename, map_location=self.device, weights_only=True)
+        )
+        print(f"Loaded network weights from: {filename}")
+
+
+def create_e2e_trainer(
+    geolens_path: str,
+    result_dir: str,
+    doe_type: str = "binary2",
+    network_type: str = "unet",
+    freeze_doe: bool = True,
+    wavelength: float = 0.55,
+    device: torch.device = None,
+) -> E2ETrainer:
+    """
+    Convenience function to create E2E trainer from GeoLens.
+    从 GeoLens 创建端到端训练器的便捷函数
+
+    Args:
+        geolens_path: Path to optimized GeoLens JSON file
+        result_dir: Directory to save results
+        doe_type: DOE type ("binary2" or "pixel2d")
+        network_type: Network type ("unet")
+        freeze_doe: Whether to freeze DOE in E2E stage
+        wavelength: Wavelength for PSF/rendering in E2E stage
+        device: PyTorch device
+
+    Returns:
+        E2ETrainer instance
+    """
+    from src.hybridlens.trainer import HybridLensTrainer
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    result_dir = Path(result_dir)
+    result_dir.mkdir(parents=True, exist_ok=True)
+
+    # First create HybridLens using HybridLensTrainer
+    doe_config = {
+        "type": doe_type,
+        "res": [1000, 1000],
+        "fab_ps": 0.003,
+        "is_square": True,
+    }
+
+    hybrid_trainer = HybridLensTrainer.from_geolens(
+        geolens_path=geolens_path,
+        result_dir=str(result_dir / "hybridlens"),
+        doe_config=doe_config,
+        device=device,
+    )
+
+    # Get the HybridLens
+    hybrid_lens = hybrid_trainer.get_hybrid_lens()
+
+    # Create network
+    network_config = {
+        "type": network_type,
+        "in_channels": 3,
+        "out_channels": 3,
+    }
+    network = E2ETrainer._create_network(network_config)
+
+    return E2ETrainer(
+        hybrid_lens=hybrid_lens,
+        network=network,
+        result_dir=str(result_dir),
+        freeze_doe=freeze_doe,
+        wavelength=wavelength,
+        device=device,
+    )

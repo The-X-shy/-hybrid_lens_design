@@ -1,0 +1,155 @@
+\documentclass[UTF8,12pt,a4paper,openany,fontset=fandol]{ctexbook}
+
+\usepackage[a4paper,left=3.00cm,right=2.60cm,top=3.50cm,bottom=2.60cm,headheight=14pt,headsep=0.80cm,footskip=1.20cm]{geometry}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\usepackage{setspace}
+\usepackage{indentfirst}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath,amssymb}
+\usepackage{caption}
+\usepackage{tocloft}
+\usepackage[hidelinks]{hyperref}
+
+% ---------- 字体设置（严格 BIT 风格，自动回退） ----------
+\setmainfont{Times New Roman}
+\IfFontExistsTF{Songti SC}{
+  \setCJKmainfont{Songti SC}
+}{
+  \IfFontExistsTF{SimSun}{
+    \setCJKmainfont{SimSun}
+  }{
+    \setCJKmainfont{FandolSong-Regular}
+  }
+}
+\IfFontExistsTF{Heiti SC}{
+  \setCJKsansfont{Heiti SC}
+}{
+  \IfFontExistsTF{SimHei}{
+    \setCJKsansfont{SimHei}
+  }{
+    \setCJKsansfont{FandolHei-Regular}
+  }
+}
+\setCJKmonofont{FandolFang-Regular}
+
+\newcommand{\song}{\CJKfamily{\CJKrmdefault}}
+\newcommand{\hei}{\CJKfamily{\CJKsfdefault}}
+
+% ---------- 正文字体与段落 ----------
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0pt}
+\AtBeginDocument{\song\fontsize{12bp}{22bp}\selectfont}
+
+% ---------- 页眉页脚 ----------
+\fancypagestyle{bitpage}{%
+  \fancyhf{}
+  \fancyfoot[C]{\song\zihao{5}\thepage}
+  \renewcommand{\headrulewidth}{0pt}
+}
+\pagestyle{bitpage}
+
+% ---------- 标题样式（对齐 Word 模板 02/03/04） ----------
+\ctexset{
+  chapter={
+    name={第,章},
+    number=\arabic{chapter},
+    format={\centering\hei\bfseries\zihao{3}},
+    beforeskip=6pt,
+    afterskip=12pt,
+    pagestyle=bitpage,
+  },
+  section={
+    format={\hei\bfseries\zihao{4}},
+    beforeskip=6pt,
+    afterskip=6pt,
+  },
+  subsection={
+    format={\hei\bfseries\zihao{-4}},
+    beforeskip=6pt,
+    afterskip=6pt,
+  }
+}
+
+% ---------- 图表题注（模板 07：宋体五号居中） ----------
+\DeclareCaptionFont{bitcapfont}{\song\zihao{5}}
+\captionsetup{
+  font=bitcapfont,
+  labelfont=bitcapfont,
+  justification=centering,
+  singlelinecheck=false,
+  skip=6pt
+}
+
+% ---------- 目录样式 ----------
+\renewcommand{\cftchapfont}{\song}
+\renewcommand{\cftsecfont}{\song}
+\renewcommand{\cftchappagefont}{\song}
+\renewcommand{\cftsecpagefont}{\song}
+
+% ---------- 论文信息（按需填写） ----------
+\newcommand{\bitTitleCN}{端到端折衍混合成像系统设计研究}
+\newcommand{\bitTitleEN}{End-to-End Hybrid Refractive-Diffractive Imaging System Design}
+\newcommand{\bitCollege}{光电学院}
+\newcommand{\bitMajor}{测控技术与仪器}
+\newcommand{\bitClass}{0402201}
+\newcommand{\bitAuthor}{李俊贤}
+\newcommand{\bitStudentID}{1120221991}
+\newcommand{\bitAdvisor}{张楠}
+\newcommand{\bitDate}{2026年6月}
+
+\begin{document}
+
+\pagenumbering{gobble}
+\input{chapters/00_cover}
+\clearpage
+\input{chapters/01_statement}
+\clearpage
+
+\frontmatter
+\pagestyle{bitpage}
+\input{chapters/02_abstract_cn}
+\clearpage
+\input{chapters/03_abstract_en}
+\clearpage
+
+\tableofcontents
+\clearpage
+
+\mainmatter
+\pagestyle{bitpage}
+\input{chapters/10_chapter1}
+\input{chapters/11_chapter2}
+\input{chapters/12_chapter3}
+
+\chapter*{结\quad 论}
+\addcontentsline{toc}{chapter}{结论}
+
+本文围绕端到端折衍混合成像系统设计展开研究，建立了从折射系统优化到折衍混合联合优化、再到重建网络协同训练的完整流程。
+在统一数据集与评估协议下，阶段实验表明该技术路线可有效提升成像质量，并具备较好的工程可复现性。
+
+
+\addcontentsline{toc}{chapter}{参考文献}
+
+\begin{thebibliography}{99}
+\bibitem{yang2024curriculum}
+Yang X, Fu Q, Heidrich W. Curriculum learning for end-to-end hybrid lens design[J]. Optics Express, 2024.
+
+\bibitem{yang2024endtoend}
+Yang X, Fu Q, Heidrich W. End-to-end optimization for hybrid refractive-diffractive imaging systems[J]. ACM Transactions on Graphics, 2024.
+\end{thebibliography}
+
+\chapter*{附录A\quad 关键配置与实验命令}
+\addcontentsline{toc}{chapter}{附录A 关键配置与实验命令}
+
+本附录给出论文主实验对应的配置文件版本、训练命令与日志目录，确保结果可追溯、可复核。
+
+\chapter*{致\quad 谢}
+\addcontentsline{toc}{chapter}{致谢}
+
+感谢导师与实验室同学在课题推进过程中提供的指导与支持。
+
+\end{document}

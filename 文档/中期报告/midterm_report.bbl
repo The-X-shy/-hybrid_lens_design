@@ -1,0 +1,14 @@
+\begin{thebibliography}{1}
+
+\bibitem{yang2024curriculum}
+Xinge Yang, Qiang Fu, and Wolfgang Heidrich.
+\newblock Curriculum learning for ab initio deep learned refractive optics.
+\newblock {\em Nature Communications}, 2024.
+
+\bibitem{yang2024endtoend}
+Xinge Yang et~al.
+\newblock End-to-end hybrid refractive-diffractive lens design with
+  differentiable ray-wave model.
+\newblock In {\em SIGGRAPH Asia}, 2024.
+
+\end{thebibliography}

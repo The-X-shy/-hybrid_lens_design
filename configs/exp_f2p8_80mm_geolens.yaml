@@ -1,0 +1,40 @@
+_extends: geolens.yaml
+
+seed: 42
+device: "cuda"
+dtype: "float32"
+
+training:
+  mode: "scratch_two_stage"
+  existing_lens_path: "/Users/lilin/Desktop/deeplens backup/results/tutorial_0207-184619/final_lens.json"
+
+lens:
+  source: "create"
+  file_path: null
+  design:
+    foclen: 8.0
+    fov: 70.0
+    fnum: 2.8
+    flange: 1.0
+    thickness: 10.0
+    lens_type:
+      - ["Aperture"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+      - ["Aspheric", "Aspheric"]
+
+optimization:
+  curriculum:
+    iterations: 3000
+    test_per_iter: 50
+  finetune:
+    iterations: 3000
+    test_per_iter: 50
+  early_stop:
+    enabled: true
+    patience: 500
+    min_delta: 1.0e-6
+    mode: "min"
+    monitor: "loss_rms"

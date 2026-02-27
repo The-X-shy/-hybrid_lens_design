@@ -1,0 +1,19 @@
+_extends: meta.yaml
+
+seed: 42
+device: "cuda"
+dtype: "float64"
+
+lens:
+  source: "file"
+  file_path: "/root/autodl-tmp/hybrid_lens_design/results/f2p8_80mm/01_geolens/final_lens.json"
+
+optimization:
+  iterations: 4000
+  test_per_iter: 50
+  early_stop:
+    enabled: true
+    patience: 500
+    min_delta: 1.0e-6
+    mode: "min"
+    monitor: "loss"
