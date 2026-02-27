@@ -1,371 +1,348 @@
 # Hybrid Lens Design
 
-End-to-end hybrid refractive-diffractive lens design framework based on DeepLens.
+端到端折衍混合光学系统设计工程（GeoLens + DOE/Metasurface + 重建网络）。
 
-## Overview
+本项目基于 DeepLens，提供从折射系统设计到折衍混合优化、再到端到端联合训练的完整可复现实验链路，支持：
+- 折射透镜三模式训练（从零两阶段 / 现成透镜两阶段 / 现成透镜仅微调）
+- 单波段或多波段 DOE 优化（默认单波段 `0.55 um`）
+- 端到端阶段 `MHA + UNet` 网络，支持冻结 DOE 仅训练折射面与网络
+- 全阶段结构化日志输出（`logs/metrics.jsonl` + `logs/summary.json`）
+- Zemax/CODE V 导出（折射面）
 
-This project implements a modular pipeline for designing and optimizing hybrid optical systems combining:
-- **Refractive lenses** (GeoLens) - Traditional glass/plastic lens elements
-- **Diffractive Optical Elements (DOE)** - Binary2 or Pixel2D metasurfaces
-- **Neural Networks** - UNet for joint end-to-end optimization
+---
 
-Based on:
-- Yang et al., "Curriculum learning for ab initio deep learned refractive optics," Nature Communications 2024
-- Yang et al., "End-to-End Hybrid Refractive-Diffractive Lens Design with Differentiable Ray-Wave Model," SIGGRAPH Asia 2024
+## 1. 项目状态与目标
 
-## Project Structure
+当前仓库聚焦毕业设计主线：
 
-```
+`折射设计 -> 折衍混合 -> 端到端联合 -> 超表面扩展`
+
+重点实验配置为：
+- 光学目标：`F-number = 2.8`，焦距目标 `80mm`，大视场约束
+- 训练策略：分阶段训练 + 统一早停 + 结构化日志
+- 中期/论文资料：与代码工程分离，放在 `文档/` 目录
+
+---
+
+## 2. 仓库结构
+
+```text
 hybrid_lens_design/
-├── configs/                    # YAML configuration files
-│   ├── default.yaml           # General defaults
-│   ├── geolens.yaml           # Refractive lens training config
-│   ├── hybrid.yaml            # HybridLens (Binary2 DOE) config
-│   ├── meta.yaml              # Metasurface (Pixel2D) config
-│   └── e2e.yaml               # End-to-end training config
+├── configs/                         # YAML 配置（支持 _extends 继承）
+│   ├── default.yaml
+│   ├── geolens.yaml
+│   ├── hybrid.yaml
+│   ├── meta.yaml
+│   ├── e2e.yaml
+│   ├── exp_f2p8_80mm_geolens.yaml
+│   ├── exp_f2p8_80mm_hybrid.yaml
+│   ├── exp_f2p8_80mm_e2e.yaml
+│   ├── exp_f2p8_80mm_meta.yaml
+│   └── exp_f2p8_80mm_e2e_smoke.yaml
 ├── src/
-│   ├── geolens/               # Refractive lens modules
-│   │   ├── trainer.py         # Curriculum learning trainer
-│   │   └── evaluator.py       # Lens evaluation
-│   ├── hybridlens/            # Hybrid lens modules
-│   │   ├── trainer.py         # Binary2 DOE trainer
-│   │   ├── metasurface_trainer.py  # Pixel2D trainer
-│   │   └── evaluator.py       # Hybrid lens evaluation
-│   ├── e2e/                   # End-to-end modules
-│   │   └── trainer.py         # HybridLens + UNet trainer
-│   └── utils/
-│       ├── config.py          # Configuration loader
-│       └── export.py          # Zemax/CODE V export utilities
-├── scripts/                   # Training scripts
-│   ├── train_geolens.py       # Train refractive lens
-│   ├── train_hybridlens.py    # Train Binary2 hybrid lens
-│   ├── train_metalens.py      # Train Pixel2D metasurface lens
-│   ├── train_e2e.py           # Train end-to-end system
-│   ├── run_pipeline.py        # Full pipeline script
-│   └── export_zemax.py        # Export to Zemax/CODE V
-├── deeplens/                  # DeepLens library (local copy)
-├── datasets/                  # Datasets (symlink to DeepLens)
-├── results/                   # Training outputs
-├── environment.yml            # Conda environment
-├── pyproject.toml             # Python package config
+│   ├── geolens/                     # 折射设计训练与评估
+│   ├── hybridlens/                  # DOE/超表面混合训练与评估
+│   ├── e2e/                         # 端到端训练、MHA+UNet 网络
+│   └── utils/                       # 配置、早停、日志、导出
+├── scripts/
+│   ├── train_geolens.py
+│   ├── train_hybridlens.py
+│   ├── train_metalens.py
+│   ├── train_e2e.py
+│   ├── run_pipeline.py
+│   ├── evaluate_e2e.py
+│   └── export_zemax.py
+├── tutorial_e2e_hybrid_lens_design_6.ipynb  # 主实验 notebook 基线
+├── 文档/
+│   ├── 中期报告/
+│   ├── 毕业论文/
+│   └── 过程记录/
+├── outputs/                         # 运行日志/临时输出（默认不建议入库）
+├── results/                         # 训练结果（默认不建议入库）
+├── environment.yml
+├── pyproject.toml
 └── README.md
 ```
 
-## Installation
+说明：
+- `datasets` 与 `deeplens` 通常是本地符号链接（见下文环境准备）。
+- `文档/` 目录已与训练输出解耦，避免与 `outputs/` 混放。
 
-### 1. Create Conda Environment
+---
+
+## 3. 环境准备
+
+### 3.1 Python / Conda
+
+推荐：
+- Python `>= 3.12`
+- PyTorch `>= 2.0`
+- CUDA 环境按机器安装
 
 ```bash
-cd hybrid_lens_design
+cd /Users/lilin/Desktop/hybrid_lens_design
 conda env create -f environment.yml
 conda activate hybrid_lens
 ```
 
-### 2. Install DeepLens (Local Editable)
+### 3.2 安装 DeepLens 与本项目
+
+本项目依赖 DeepLens。推荐可编辑安装：
 
 ```bash
+# 1) 安装 DeepLens（按你的本地路径调整）
+pip install -e /Users/lilin/Desktop/DeepLens-main
+
+# 2) 安装当前项目
 pip install -e .
 ```
 
-### 3. Verify Installation
+### 3.3 数据与依赖路径（常见做法）
 
-```python
-from deeplens import GeoLens
-from deeplens.hybridlens import HybridLens
-print("DeepLens installed successfully!")
-```
-
-## Quick Start
-
-### Train a Complete Hybrid Lens System
+如需兼容现有脚本，可在仓库根目录创建符号链接：
 
 ```bash
-# Run full pipeline: GeoLens -> HybridLens -> Evaluation
+ln -s /Users/lilin/Desktop/DeepLens-main/deeplens deeplens
+ln -s /Users/lilin/Desktop/DeepLens-main/datasets datasets
+```
+
+---
+
+## 4. 快速开始
+
+### 4.1 折射阶段（GeoLens）
+
+```bash
+python scripts/train_geolens.py \
+  --config configs/geolens.yaml \
+  --mode scratch_two_stage
+```
+
+三种模式：
+- `scratch_two_stage`：从零创建镜头，执行阶段1+阶段2
+- `existing_two_stage`：读取现成镜头，执行阶段1+阶段2
+- `existing_finetune_only`：读取现成镜头，跳过阶段1，仅阶段2微调
+
+### 4.2 折衍混合阶段（Hybrid DOE）
+
+```bash
+python scripts/train_hybridlens.py \
+  --config configs/hybrid.yaml \
+  --geolens /path/to/final_lens.json \
+  --wavelength 0.55
+```
+
+### 4.3 超表面扩展（Metasurface / Pixel2D）
+
+```bash
+python scripts/train_metalens.py \
+  --config configs/meta.yaml \
+  --geolens /path/to/final_lens.json
+```
+
+### 4.4 端到端联合训练（E2E）
+
+```bash
+python scripts/train_e2e.py \
+  --config configs/e2e.yaml \
+  --hybridlens /path/to/hybrid_final.json \
+  --network_type mha_unet \
+  --freeze_doe 1 \
+  --wavelength 0.55
+```
+
+### 4.5 一键流水线
+
+```bash
+# 默认阶段：geolens,hybridlens,eval
 python scripts/run_pipeline.py --stages geolens,hybridlens,eval
 
-# Or run with all stages including metasurface and E2E
+# 全流程：geolens,hybridlens,metalens,e2e,eval
 python scripts/run_pipeline.py --full
 ```
 
-### Individual Training Stages
+---
+
+## 5. F2.8 / 80mm 复现实验建议
+
+仓库中已提供实验配置模板（`configs/exp_f2p8_80mm_*.yaml`）。
+建议先做 smoke，再跑 full：
+
+### 5.1 Smoke（快速连通）
 
 ```bash
-# 1. Train refractive lens (GeoLens)
-python scripts/train_geolens.py --config configs/geolens.yaml
-
-# 2. Train hybrid lens with Binary2 DOE
-python scripts/train_hybridlens.py --geolens results/geolens/final_lens.json
-
-# 3. Train metasurface lens with Pixel2D DOE
-python scripts/train_metalens.py --geolens results/geolens/final_lens.json
-
-# 4. Train end-to-end system (HybridLens + UNet)
-python scripts/train_e2e.py --hybridlens results/hybridlens/final.json
+python scripts/train_geolens.py --config configs/exp_f2p8_80mm_geolens.yaml --iterations 100 --finetune_iterations 100
+python scripts/train_hybridlens.py --config configs/exp_f2p8_80mm_hybrid.yaml --iterations 100
+python scripts/train_e2e.py --config configs/exp_f2p8_80mm_e2e_smoke.yaml
+python scripts/train_metalens.py --config configs/exp_f2p8_80mm_meta.yaml --iterations 100
 ```
 
-## Configuration
-
-### GeoLens Configuration (configs/geolens.yaml)
-
-```yaml
-lens:
-  design:
-    foclen: 8.0      # Focal length (mm)
-    fov: 80.0        # Field of view (degrees)
-    fnum: 2.0        # F-number
-    
-optimization:
-  curriculum:
-    iterations: 2000
-    lrs: [0.0001, 0.0001, 0.01, 0.0001]  # [d, c, k, ai]
-```
-
-### HybridLens Configuration (configs/hybrid.yaml)
-
-```yaml
-doe:
-  type: "binary2"    # DOE type
-  res: [1000, 1000]  # Resolution
-  fab_ps: 0.003      # Pixel size (mm)
-  
-optimization:
-  doe_lr: 0.1
-  iterations: 2000
-  spp: 1000000       # Samples per pixel
-```
-
-## API Usage
-
-### GeoLens Training
-
-```python
-from src.geolens.trainer import GeoLensTrainer
-from src.utils.config import load_config
-
-config = load_config("configs/geolens.yaml")
-trainer = GeoLensTrainer.from_config(config)
-
-# Train with curriculum learning + fine-tuning
-curriculum_history, finetune_history = trainer.train(
-    curriculum_config={"iterations": 2000},
-    finetune_config={"iterations": 1200},
-)
-
-# Get trained lens
-lens = trainer.get_lens()
-```
-
-### HybridLens Training
-
-```python
-from src.hybridlens.trainer import HybridLensTrainer
-
-trainer = HybridLensTrainer.from_geolens(
-    geolens_path="results/geolens/final_lens.json",
-    result_dir="results/hybridlens",
-)
-
-# Setup sensor
-trainer.setup_sensor(match_aperture=True)
-
-# Train
-loss_history = trainer.train(
-    doe_lr=0.1,
-    iterations=2000,
-    spp=1000000,
-)
-```
-
-### Metasurface (Pixel2D) Training
-
-```python
-from src.hybridlens.metasurface_trainer import MetasurfaceTrainer
-
-trainer = MetasurfaceTrainer.from_geolens(
-    geolens_path="results/geolens/final_lens.json",
-    result_dir="results/metalens",
-)
-
-loss_history = trainer.train(
-    doe_lr=0.1,
-    smoothness_weight=0.001,  # Regularization
-    fabrication_weight=0.01,
-)
-```
-
-### End-to-End Training
-
-```python
-from src.e2e.trainer import E2ETrainer
-
-trainer = E2ETrainer.from_hybridlens(
-    hybridlens_path="results/hybridlens/final.json",
-    result_dir="results/e2e",
-)
-
-loss_history = trainer.train(
-    train_dataset_path="./datasets/DIV2K/train",
-    epochs=100,
-    batch_size=4,
-)
-```
-
-### Evaluation
-
-```python
-from src.hybridlens.evaluator import HybridLensEvaluator
-
-evaluator = HybridLensEvaluator.from_file(
-    "results/hybridlens/final.json",
-    "results/evaluation",
-)
-
-# Full analysis
-results = evaluator.full_analysis()
-
-# Specific analyses
-psfs = evaluator.compute_psf()
-doe_analysis = evaluator.analyze_doe_phase()
-chromatic = evaluator.analyze_chromatic_aberration()
-```
-
-## Export to Zemax/CODE V
-
-Export trained lens designs for fabrication or further analysis in professional optical design software.
-
-### Command Line Export
+### 5.2 Full（正式训练）
 
 ```bash
-# Export to Zemax (.zmx) format only
-python scripts/export_zemax.py --lens results/geolens/final_lens.json
-
-# Export to all formats (Zemax, CODE V, JSON)
-python scripts/export_zemax.py --lens results/geolens/final_lens.json --all
-
-# Specify output directory and lens name
-python scripts/export_zemax.py --lens results/geolens/final_lens.json \
-    --output exports/ --name my_lens_design
-
-# Export specific formats
-python scripts/export_zemax.py --lens results/geolens/final_lens.json \
-    --formats zmx seq
+python scripts/train_geolens.py --config configs/exp_f2p8_80mm_geolens.yaml --foclen 80 --fnum 2.8
+python scripts/train_hybridlens.py --config configs/exp_f2p8_80mm_hybrid.yaml --iterations 5000 --wavelength 0.55
+python scripts/train_e2e.py --config configs/exp_f2p8_80mm_e2e.yaml --epochs 5000 --freeze_doe 1 --network_type mha_unet
+python scripts/train_metalens.py --config configs/exp_f2p8_80mm_meta.yaml --iterations 4000
 ```
 
-### Programmatic Export
+注意：
+- `exp_f2p8_80mm_geolens.yaml` 中如果焦距字段尚未更新为 80，可通过 CLI 覆盖（如上 `--foclen 80`）。
+- 使用早停时，最终轮次可能小于配置上限。
 
-```python
-from src.utils.export import ZemaxExporter, export_geolens_to_zemax
+---
 
-# Simple export
-exports = export_geolens_to_zemax(
-    lens_path="results/geolens/final_lens.json",
-    output_dir="exports/",
-    formats=["zmx", "seq", "json"],
-)
+## 6. 配置系统说明
 
-# Full control with ZemaxExporter
-exporter = ZemaxExporter.from_file(
-    lens_path="results/geolens/final_lens.json",
-    output_dir="exports/",
-    lens_name="my_design",
-)
+### 6.1 继承机制
 
-# Validate before export
-validation = exporter.validate_lens()
-if validation["warnings"]:
-    print("Warnings:", validation["warnings"])
+配置支持 `_extends`：
+- 子配置覆盖父配置同名字段
+- 常用方式：`exp_*.yaml` 继承 `geolens.yaml` / `hybrid.yaml` / `e2e.yaml` / `meta.yaml`
 
-# Export to specific format
-zmx_path = exporter.export_zmx()
+### 6.2 输出目录优先级
 
-# Export to all formats at once
-all_exports = exporter.export_all()
+`src/utils/config.py` 逻辑：
+1. 优先 `output.dir`
+2. 否则使用 `output.base_dir`（可选时间戳）
+
+### 6.3 统一早停配置
+
+各阶段均支持：
+
+```yaml
+optimization:
+  early_stop:
+    enabled: true
+    patience: 500
+    min_delta: 1.0e-6
+    mode: "min"
+    monitor: "loss"  # 阶段不同可改 monitor 键
 ```
 
-### Supported Formats
+### 6.4 单波段优化
 
-| Format | Extension | Software | Notes |
-|--------|-----------|----------|-------|
-| Zemax | `.zmx` | Zemax OpticStudio | Standard, Even Asph surfaces |
-| CODE V | `.seq` | Synopsys CODE V | Standard, Aspheric surfaces |
-| DeepLens | `.json` | DeepLens | Native format, includes all parameters |
+Hybrid 阶段：
 
-### Export Notes
-
-- **GeoLens Only**: Export handles refractive lens elements. DOE/metasurface elements in HybridLens are not directly exportable to Zemax (these require separate fabrication workflows).
-- **Metadata**: Each export includes a JSON metadata file with lens parameters and validation results.
-- **Validation**: The exporter validates lens parameters before export and warns about unusual values.
-
-## DOE Types
-
-### Binary2 (Radial Polynomial)
-
-Parameterized by radial polynomial coefficients (α₂, α₄, α₆, α₈, α₁₀):
-```
-φ(r) = π(α₂r² + α₄r⁴ + α₆r⁶ + α₈r⁸ + α₁₀r¹⁰)
+```yaml
+optimization:
+  wavelengths: [0.55]
+  wavelength_weights: [1.0]
 ```
 
-Advantages:
-- Compact representation (5 parameters)
-- Smooth phase profile
-- Easier to fabricate
+E2E 阶段：
 
-### Pixel2D (Metasurface)
-
-Direct phase map representation where each pixel is an independent parameter:
-```
-φ(x,y) = phase_map[x,y]
+```yaml
+optimization:
+  wavelength: 0.55
+  freeze_doe: true
 ```
 
-Advantages:
-- Maximum design freedom
-- Can achieve complex phase profiles
-- Supports arbitrary patterns
+---
 
-## Technical Details
+## 7. 训练产物与日志约定
 
-### Ray-Wave Hybrid Model
+每阶段目录中统一包含：
+- `logs/metrics.jsonl`：逐 step/epoch 结构化指标
+- `logs/summary.json`：阶段汇总
 
-The HybridLens uses a differentiable ray-wave model:
-1. **Ray tracing** through refractive elements (GeoLens)
-2. **Coherent ray tracing** to compute complex field at DOE plane
-3. **DOE phase modulation** applied to wavefield
-4. **Angular Spectrum Method** propagation to sensor
+### 7.1 GeoLens
 
-### Loss Functions
+关键文件：
+- `final_lens.json`
+- `final_lens.zmx`
+- `final_lens_*.png`（analysis 输出，取决于 DeepLens）
+- 过程快照：`iter*.json`、`fine-tune/iter*.json`
 
-- **PSFLoss**: Encourages compact PSF (spot size minimization)
-- **MSE Loss**: Image reconstruction quality
-- **LPIPS Loss**: Perceptual similarity
-- **Regularization**: Smoothness and fabrication constraints for DOE
+### 7.2 Hybrid DOE
 
-## Hardware Requirements
+关键文件：
+- `hybrid_final.json`
+- `hybridlens_final.json`
+- `hybrid_iter*.json` / `hybridlens_iter*.json`
+- `hybrid_psf_iter*.png`
+- `hybrid_loss_curve.png`
 
-- **CPU**: Multi-core processor (training is parallelizable)
-- **GPU**: CUDA-capable GPU recommended (10x+ speedup)
-- **Memory**: 16GB+ RAM recommended
-- **Storage**: ~10GB for datasets and results
+### 7.3 Metasurface
 
-## Citation
+关键文件：
+- `metasurface_iterfinal.json`
+- `phase_map_iterfinal.png` / `phase_map_iterfinal.pt`
+- 过程快照：`metasurface_iter*.json`、`phase_map_iter*.png/.pt`
 
-If you use this code, please cite:
+### 7.4 E2E
 
-```bibtex
-@article{yang2024curriculum,
-  title={Curriculum learning for ab initio deep learned refractive optics},
-  author={Yang, Xinge and Fu, Qiang and Heidrich, Wolfgang},
-  journal={Nature Communications},
-  year={2024}
-}
+关键文件：
+- `network_epoch*.pth`
+- `hybridlens_epoch*.json`
+- `psf_epoch*.png`
+- `logs/summary.json` 中包含 `doe_change_max_abs`（用于验证 DOE 是否冻结）
 
-@inproceedings{yang2024endtoend,
-  title={End-to-End Hybrid Refractive-Diffractive Lens Design with Differentiable Ray-Wave Model},
-  author={Yang, Xinge and others},
-  booktitle={SIGGRAPH Asia},
-  year={2024}
-}
+---
+
+## 8. 评估与导出
+
+### 8.1 评估
+
+```bash
+python scripts/evaluate_e2e.py --help
+python scripts/test_inference.py --help
+python scripts/remote_test_inference.py --help
 ```
 
-## License
+### 8.2 Zemax/CODE V 导出（折射面）
 
-Apache 2.0 License - See LICENSE file for details.
+```bash
+python scripts/export_zemax.py --lens /path/to/final_lens.json --all
+```
+
+说明：
+- 导出主要面向折射系统；DOE/超表面通常需独立工艺或额外后处理。
+
+---
+
+## 9. 文档目录说明
+
+- `文档/中期报告/`：中期报告 LaTeX/PDF/PPT 与图集
+- `文档/毕业论文/`：BIT 论文模板、严格 LaTeX 模板
+- `文档/过程记录/`：阶段状态文档与训练过程记录
+
+推荐入口：
+- 中期报告：`文档/中期报告/midterm_report.tex`
+- 毕业论文严格模板：`文档/毕业论文/latex_strict_bit/main.tex`
+
+---
+
+## 10. 常见问题（FAQ）
+
+### Q1: 数据路径不存在怎么办？
+- E2E 脚本对 `BSDS300` 路径支持自动下载逻辑。
+- 其他数据集请在 `configs/*.yaml` 中显式设置 `dataset.train_path` / `val_path`。
+
+### Q2: 显存不足（OOM）？
+- 降低 `batch_size`
+- 降低 `psf_size`
+- 降低 `spp`
+- 减少 `test_per_iter` 或 `test_per_epoch` 频率
+
+### Q3: LPIPS 不可用？
+- 安装 `lpips`
+- 或在 E2E 配置中将 `loss_weights.lpips` 置为 `0.0`
+
+### Q4: 如何验证 E2E 阶段确实冻结 DOE？
+- 检查 `logs/summary.json` 的 `doe_change_max_abs`
+- 若接近 `0`，说明 DOE 参数基本未变化
+
+---
+
+## 11. 参考工作
+
+- Yang, Fu, Heidrich. Curriculum learning for ab initio deep learned refractive optics. Nature Communications, 2024.
+- Yang et al. End-to-End Hybrid Refractive-Diffractive Lens Design with Differentiable Ray-Wave Model. SIGGRAPH Asia, 2024.
+
+---
+
+## 12. 许可与使用
+
+当前仓库尚未单独提供 `LICENSE` 文件。
+如需公开发布或第三方协作，建议补充明确许可证（例如 MIT/Apache-2.0）后再进行二次分发。
