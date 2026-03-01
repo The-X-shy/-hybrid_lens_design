@@ -22,7 +22,7 @@ echo "[INFO] Checking environment imports..." | tee -a "${RUN_LOG}"
 "${PYTHON_BIN}" -c "import torch, torchvision, lpips, yaml, tqdm; print('deps_ok')" | tee -a "${RUN_LOG}"
 
 echo "[INFO] Installing editable packages..." | tee -a "${RUN_LOG}"
-"${PYTHON_BIN}" -m pip install -e /root/autodl-tmp/DeepLens >> "${RUN_LOG}" 2>&1
+"${PYTHON_BIN}" -m pip install -e "${ROOT_DIR}/third_party/deeplens-core" >> "${RUN_LOG}" 2>&1
 "${PYTHON_BIN}" -m pip install -e "${ROOT_DIR}" >> "${RUN_LOG}" 2>&1
 
 echo "[INFO] Ensuring BSDS300 dataset..." | tee -a "${RUN_LOG}"

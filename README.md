@@ -51,7 +51,17 @@ hybrid_lens_design/
 │   ├── train_e2e.py
 │   ├── run_pipeline.py
 │   ├── evaluate_e2e.py
-│   └── export_zemax.py
+│   ├── export_zemax.py
+│   └── repro/                      # 环境锁定与复现脚本
+├── third_party/
+│   └── deeplens-core/              # 锁定的 DeepLens 快照（v1.2.3）
+├── repro/
+│   ├── deeplens_lock.json          # DeepLens 锁定元数据
+│   ├── deeplens_sha256_manifest.txt
+│   ├── environment/
+│   ├── datasets/
+│   ├── baselines/
+│   └── reports/
 ├── tutorial_e2e_hybrid_lens_design_6.ipynb  # 主实验 notebook 基线
 ├── 文档/
 │   ├── 中期报告/
@@ -85,13 +95,13 @@ conda env create -f environment.yml
 conda activate hybrid_lens
 ```
 
-### 3.2 安装 DeepLens 与本项目
+### 3.2 安装锁定版 DeepLens 与本项目
 
-本项目依赖 DeepLens。推荐可编辑安装：
+本仓库已经内置锁定版 DeepLens 快照（`third_party/deeplens-core`），默认只使用该版本：
 
 ```bash
-# 1) 安装 DeepLens（按你的本地路径调整）
-pip install -e /Users/lilin/Desktop/DeepLens-main
+# 1) 安装锁定版 DeepLens
+pip install -e ./third_party/deeplens-core
 
 # 2) 安装当前项目
 pip install -e .
@@ -99,11 +109,36 @@ pip install -e .
 
 ### 3.3 数据与依赖路径（常见做法）
 
-如需兼容现有脚本，可在仓库根目录创建符号链接：
+旧脚本兼容模式下，仍可保留符号链接（非复现必需）：
 
 ```bash
 ln -s /Users/lilin/Desktop/DeepLens-main/deeplens deeplens
 ln -s /Users/lilin/Desktop/DeepLens-main/datasets datasets
+```
+
+### 3.4 一键复现（Linux+CUDA）
+
+```bash
+# 1) 构建并锁定环境
+bash scripts/repro/bootstrap_linux_cuda.sh
+
+# 2) 运行四阶段 smoke 复现实验 + 验收报告
+bash scripts/repro/run_smoke_repro.sh
+```
+
+说明：
+- 若 `repro/environment/conda-linux-cuda12.1-explicit.txt` 当前是占位文件，`bootstrap_linux_cuda.sh` 会自动回退到 `environment.yml` 并在完成后写回真实 Linux 显式锁。
+- `run_smoke_repro.sh` 默认严格校验数据哈希；若首次生成数据清单，使用 `ALLOW_MANIFEST_BOOTSTRAP=1 bash scripts/repro/run_smoke_repro.sh`。
+
+验收输出：
+- 环境指纹：`repro/reports/env_fingerprint_<timestamp>.json`
+- 复现报告：`repro/reports/repro_report_<timestamp>.md`（PASS/FAIL）
+- 指标对比脚本：`scripts/repro/verify_repro_metrics.py`
+
+DeepLens 锁定校验：
+
+```bash
+python scripts/repro/check_deeplens_lock.py --strict-import
 ```
 
 ---

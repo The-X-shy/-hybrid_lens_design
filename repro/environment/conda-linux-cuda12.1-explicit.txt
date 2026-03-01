@@ -1,0 +1,12 @@
+# Linux+CUDA explicit lock placeholder.
+#
+# This file must be generated on a Linux+CUDA host with:
+#   conda list -n <env_name> --explicit > repro/environment/conda-linux-cuda12.1-explicit.txt
+#
+# Workflow:
+#   bash scripts/repro/bootstrap_linux_cuda.sh
+#
+# The bootstrap script will:
+# 1) detect this file is not @EXPLICIT
+# 2) create env from environment.yml
+# 3) export a true Linux explicit lock to this path

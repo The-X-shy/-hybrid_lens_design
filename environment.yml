@@ -24,4 +24,4 @@ dependencies:
       - timm>=0.9.0
       - transformers>=4.30.0
       - wandb>=0.15.0
-      - -e ../DeepLens-main  # 本地可编辑安装 DeepLens
+      - -e ./third_party/deeplens-core  # 锁定 vendored DeepLens 快照

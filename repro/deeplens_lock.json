@@ -1,0 +1,10 @@
+{
+  "name": "deeplens-core",
+  "version": "1.2.3",
+  "snapshot_source": "/Users/lilin/Desktop/DeepLens-main",
+  "snapshot_created_at": "2026-03-01T17:47:31.228809+00:00",
+  "tree_sha256": "9ff277a80f9c62ed776980f3f1009d44ec67290d801f4cba58b42bf49ae45a4d",
+  "file_count": 108,
+  "manifest_path": "repro/deeplens_sha256_manifest.txt",
+  "root": "third_party/deeplens-core"
+}

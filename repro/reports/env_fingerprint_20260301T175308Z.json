@@ -1,0 +1,35 @@
+{
+  "captured_at_utc": "2026-03-01T17:53:08.094804+00:00",
+  "platform": "macOS-26.3-arm64-arm-64bit",
+  "system": "Darwin",
+  "machine": "arm64",
+  "python_executable": "/opt/anaconda3/bin/python",
+  "python_version": "3.12.7 | packaged by Anaconda, Inc. | (main, Oct  4 2024, 08:22:19) [Clang 14.0.6 ]",
+  "env": {
+    "CONDA_DEFAULT_ENV": "base",
+    "CUDA_VISIBLE_DEVICES": null
+  },
+  "torch": {
+    "torch_version": "2.10.0",
+    "cuda_is_available": false,
+    "cuda_version": null,
+    "cudnn_version": null,
+    "device_count": 0
+  },
+  "packages": {
+    "deeplens-core": null,
+    "hybrid-lens-design": null,
+    "torch": "2.10.0",
+    "torchvision": null,
+    "torchaudio": null,
+    "numpy": "1.26.4",
+    "matplotlib": "3.9.2",
+    "scikit-image": "0.24.0",
+    "lpips": null,
+    "timm": null,
+    "transformers": null,
+    "pyyaml": "6.0.1"
+  },
+  "nvidia_smi": null,
+  "pip_freeze_path": "repro/environment/pip-freeze.txt"
+}
