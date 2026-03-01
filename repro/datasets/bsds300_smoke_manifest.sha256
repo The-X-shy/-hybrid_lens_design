@@ -1,0 +1,3 @@
+# Dataset SHA256 manifest for BSDS300_smoke images root
+# Generate/refresh with:
+# python scripts/repro/check_dataset_manifest.py --dataset-root /root/autodl-tmp/DeepLens/datasets/BSDS300_smoke/images --manifest repro/datasets/bsds300_smoke_manifest.sha256 --create-if-missing
