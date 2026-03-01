@@ -18,8 +18,8 @@ results/
 tmp/
 
 # Local linked dependencies
-datasets
-deeplens
+/datasets
+/deeplens
 
 # LaTeX temporary files
 *.aux
