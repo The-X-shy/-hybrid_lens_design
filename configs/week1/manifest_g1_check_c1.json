@@ -1,0 +1,41 @@
+{
+  "spec_version": "1.1",
+  "project": "/mnt/d/hybrid_lens_design",
+  "upstream": "/mnt/d/我的文档/deeplens/raywave-tracing",
+  "python": "/home/ysl/miniconda3/envs/nami-pt22/bin/python",
+  "host_commit": "dc83fa52901483f28ff35aa85b5435a1bfc59c44",
+  "upstream_commit": "777e753be7778b09bf13fb55c633a56ac4ad04e5",
+  "budget": {
+    "max_gpu_device_hours": 8,
+    "max_cpu_wall_hours": 4,
+    "max_run_minutes": 30,
+    "max_attempts": 24,
+    "max_retries": 4
+  },
+  "groups": {
+    "W0-U": [],
+    "W0-I": [],
+    "W1-REF": [],
+    "W1-CHECK": [
+      {
+        "run_id": "g1-check-c1",
+        "group": "W1-CHECK",
+        "gate": "G1",
+        "case": "C1",
+        "backend_mode": "reference",
+        "variant": "reference",
+        "mode": "check",
+        "pair_id": "g1-C1",
+        "optics_config": "configs/week1/cases.json",
+        "optimization_config": "artifacts/G1/reference_protocol.json",
+        "seed": 101,
+        "max_minutes": 30,
+        "protocol_file": "artifacts/G1/reference_check_protocol_c1.json"
+      }
+    ]
+  },
+  "integration_protocol_sha256": "a58ea09fd26969ccf274c583addd8fd6585bcc69e81f22764eb3f759d250bfe3",
+  "reference_protocol_sha256": "5e5aa60c8e63964432105cd4d82c7e4297258ea6201fe62ff9df81f0c48b7741",
+  "thresholds_sha256": "6a862f90721cdf1bb0681c4b89928faa1bd5c14d51ca823f530d5c4166c4f066",
+  "reference_extension_sha256": "34e115524b52edf841022d6889f6bc9ab275292cf5df24d325db534d74e54fd2"
+}

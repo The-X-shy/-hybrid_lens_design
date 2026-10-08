@@ -1,0 +1,48 @@
+{
+  "spec_version": "1.1",
+  "project": "/mnt/d/hybrid_lens_design",
+  "upstream": "/mnt/d/我的文档/deeplens/raywave-tracing",
+  "python": "/home/ysl/miniconda3/envs/nami-pt22/bin/python",
+  "host_commit": "dc83fa52901483f28ff35aa85b5435a1bfc59c44",
+  "upstream_commit": "777e753be7778b09bf13fb55c633a56ac4ad04e5",
+  "budget": {
+    "max_gpu_device_hours": 8,
+    "max_cpu_wall_hours": 4,
+    "max_run_minutes": 30,
+    "max_attempts": 24,
+    "max_retries": 4
+  },
+  "groups": {
+    "W0-U": [
+      {
+        "run_id": "w0u-05",
+        "group": "W0-U",
+        "gate": "G0-U",
+        "case": "fig5_native_free_space_micro",
+        "backend_mode": "upstream",
+        "pair_id": "repeat-fig5-native",
+        "variant": "native_fig5",
+        "optics_config": "configs/week1/upstream_native/config.json",
+        "optimization_config": "configs/week1/upstream_native/config.json",
+        "seed": 102,
+        "max_minutes": 5
+      },
+      {
+        "run_id": "w0u-06",
+        "group": "W0-U",
+        "gate": "G0-U",
+        "case": "fig5_native_free_space_micro",
+        "backend_mode": "upstream",
+        "pair_id": "repeat-fig5-native",
+        "variant": "native_fig5",
+        "optics_config": "configs/week1/upstream_native/config.json",
+        "optimization_config": "configs/week1/upstream_native/config.json",
+        "seed": 102,
+        "max_minutes": 5
+      }
+    ],
+    "W0-I": [],
+    "W1-REF": [],
+    "W1-CHECK": []
+  }
+}

@@ -92,7 +92,7 @@ def load_config(
     # Handle config inheritance
     if "_extends" in config_dict:
         extends_path = base_dir / config_dict.pop("_extends")
-        base_config = load_yaml(extends_path)
+        base_config = load_config(extends_path, base_dir=extends_path.parent).to_dict()
         config_dict = deep_merge(base_config, config_dict)
 
     return Config(config_dict)

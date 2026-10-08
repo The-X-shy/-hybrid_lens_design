@@ -1,0 +1,31 @@
+{
+  "path": "free",
+  "device": "cuda",
+  "seed": 103,
+  "phase_path": "/mnt/d/hybrid_lens_design/configs/week1/upstream_micro_v2/initial_phase.npy",
+  "direction_path": "/mnt/d/hybrid_lens_design/configs/week1/upstream_native/direction.npy",
+  "pitch_mm": 0.0063,
+  "wavelength_um": 0.7,
+  "sensor_z_mm": 0.8064,
+  "primary_samples": 8,
+  "secondary_samples": 128,
+  "oversamp": 1.0,
+  "ray_xy_mm": [
+    [
+      -0.05,
+      -0.05
+    ],
+    [
+      -0.05,
+      0.05
+    ],
+    [
+      0.05,
+      -0.05
+    ],
+    [
+      0.05,
+      0.05
+    ]
+  ]
+}

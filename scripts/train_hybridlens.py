@@ -112,6 +112,7 @@ def main():
         "type": config.doe.type,
         "res": config.doe.res,
         "fab_ps": config.doe.fab_ps,
+        "fab_step": getattr(config.doe, "fab_step", 16),
         "is_square": config.doe.is_square,
         "param_model": getattr(config.doe, "param_model", "binary2"),
     }

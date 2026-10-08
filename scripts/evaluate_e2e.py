@@ -65,6 +65,59 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_hybridlens_path(requested_path, config):
+    requested = Path(requested_path)
+    if not requested.is_absolute():
+        requested = (project_root / requested).resolve()
+
+    freeze_doe = bool(getattr(config.optimization, "freeze_doe", True))
+    freeze_geolens = bool(getattr(config.optimization, "freeze_geolens", False))
+    is_joint_training = (not freeze_doe) and (not freeze_geolens)
+
+    resolved = requested
+    resolution = "explicit"
+    note = None
+    refocus_on_load = True
+
+    if requested.name.startswith("hybridlens_epoch"):
+        refocus_on_load = False
+        resolution = "saved_e2e_lens_no_refocus"
+        note = (
+            "Evaluating a saved E2E lens checkpoint. "
+            "Refocus-on-load is disabled to preserve the serialized optics state."
+        )
+
+    if is_joint_training and requested.name == "hybridlens_epochfinal.json":
+        sibling_input = requested.with_name("hybridlens_input.json")
+        config_input = Path(config.lens.file_path)
+        if not config_input.is_absolute():
+            config_input = (project_root / config_input).resolve()
+
+        if not requested.exists():
+            for candidate, reason in (
+                (
+                    sibling_input,
+                    "auto_input_snapshot_for_joint_training",
+                ),
+                (
+                    config_input,
+                    "auto_source_lens_for_joint_training",
+                ),
+            ):
+                if candidate.exists():
+                    resolved = candidate.resolve()
+                    resolution = reason
+                    refocus_on_load = True
+                    note = (
+                        "Joint E2E evaluation detected and the requested saved "
+                        "lens checkpoint is unavailable. Falling back to the "
+                        "input/reference hybrid lens."
+                    )
+                    break
+
+    return resolved, resolution, note, refocus_on_load
+
+
 def calculate_metrics(clean_np, recon_np):
     """Calculate PSNR and SSIM for a batch of images"""
     b, c, h, w = clean_np.shape
@@ -113,6 +166,15 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
+    (
+        resolved_hybridlens,
+        lens_resolution,
+        lens_note,
+        refocus_on_load,
+    ) = resolve_hybridlens_path(
+        args.hybridlens, config
+    )
+
     network_config = {
         "type": config.network.type,
         "in_channels": getattr(config.network, "in_channels", 3),
@@ -126,12 +188,19 @@ def main():
             if hasattr(config.network.mha, "to_dict")
             else config.network.mha
         )
+    if hasattr(config.network, "params"):
+        network_config["params"] = (
+            config.network.params.to_dict()
+            if hasattr(config.network.params, "to_dict")
+            else config.network.params
+        )
 
     trainer = E2ETrainer.from_hybridlens(
-        hybridlens_path=args.hybridlens,
+        hybridlens_path=str(resolved_hybridlens),
         result_dir=args.output_dir,
         network_config=network_config,
-        freeze_doe=True,
+        refocus_on_load=refocus_on_load,
+        freeze_doe=bool(getattr(config.optimization, "freeze_doe", True)),
         wavelength=getattr(config.optimization, "wavelength", 0.55),
         device=device,
     )
@@ -143,6 +212,7 @@ def main():
     val_path = args.dataset or getattr(config.dataset, "val_path", None)
     if not val_path or not os.path.exists(val_path):
         if "BSDS300" in getattr(config.dataset, "train_path", ""):
+            os.makedirs("./datasets", exist_ok=True)
             output_image_dir = download_bsd300("./datasets")
             candidate_test = os.path.join(output_image_dir, "test", "images")
             if not os.path.exists(candidate_test):
@@ -239,12 +309,28 @@ def main():
     print("\n" + "=" * 50)
     print("Final Evaluation Results on Test Set")
     print("=" * 50)
+    print(f"Resolved hybrid lens: {resolved_hybridlens}")
+    print(f"Refocus on load: {refocus_on_load}")
     for k, v in results.items():
         if v is not None:
             print(f"{k}: {v:.4f}")
 
     with open(os.path.join(args.output_dir, "eval_metrics.json"), "w") as f:
         json.dump(to_jsonable(results), f, indent=4)
+
+    eval_config = {
+        "config": args.config,
+        "checkpoint": args.checkpoint,
+        "hybridlens_requested": args.hybridlens,
+        "hybridlens_resolved": str(resolved_hybridlens),
+        "hybridlens_resolution": lens_resolution,
+        "hybridlens_resolution_note": lens_note,
+        "hybridlens_refocus_on_load": refocus_on_load,
+        "dataset": val_path,
+        "output_dir": args.output_dir,
+    }
+    with open(os.path.join(args.output_dir, "eval_config.json"), "w") as f:
+        json.dump(to_jsonable(eval_config), f, indent=4)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ doe:
   type: "binary2"      # DOE 类型: "binary2", "pixel2d"
   res: [1000, 1000]    # 分辨率 [H, W]
   fab_ps: 0.003        # 制造像素尺寸 (mm)
+  fab_step: 16         # 相位量化级数
   is_square: true
   param_model: "binary2"  # 参数化模型
   # 初始多项式系数

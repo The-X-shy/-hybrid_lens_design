@@ -100,12 +100,17 @@ class HybridLensTrainer:
             "d": d_sensor - 0.5,  # DOE position
             "res": [1000, 1000],
             "fab_ps": 0.003,
+            "fab_step": 16,
             "is_square": True,
             "param_model": "binary2",
             "order2": 0.0,
             "order4": 0.0,
             "order6": 0.0,
             "order8": 0.0,
+        }
+        allowed_doe_keys = {
+            "type", "d", "res", "fab_ps", "fab_step", "wvln0", "mat",
+            "is_square", "alpha2", "alpha4", "alpha6", "alpha8", "alpha10",
         }
         if doe_config is None:
             doe_config = default_doe_config
@@ -115,6 +120,7 @@ class HybridLensTrainer:
             if merged.get("d") is None:
                 merged["d"] = d_sensor - 0.5
             doe_config = merged
+        doe_config = {key: value for key, value in doe_config.items() if key in allowed_doe_keys}
 
         # Add DOE to lens data
         lens_data["DOE"] = doe_config
@@ -161,6 +167,7 @@ class HybridLensTrainer:
             "type": config.doe.type,
             "res": config.doe.res,
             "fab_ps": config.doe.fab_ps,
+            "fab_step": getattr(config.doe, "fab_step", 16),
             "is_square": config.doe.is_square,
             "param_model": config.doe.param_model,
         }
@@ -175,11 +182,11 @@ class HybridLensTrainer:
         )
 
     def setup_sensor(
-        self, match_aperture: bool = True, sensor_res: Tuple[int, int] = (2000, 2000)
+        self, match_aperture: bool = False, sensor_res: Tuple[int, int] = (2000, 2000)
     ):
         """
-        Setup sensor size to match aperture.
-        设置传感器大小以匹配光圈
+        Configure sensor geometry. By default preserve the loaded GeoLens sensor.
+        默认保留输入折射镜头的传感器尺寸
         """
         if match_aperture:
             aper_r = self.hybrid_lens.geolens.surfaces[
@@ -191,6 +198,16 @@ class HybridLensTrainer:
             )
             self.hybrid_lens.geolens.set_sensor(
                 sensor_size=new_sensor_size, sensor_res=sensor_res
+            )
+        else:
+            # Preserve the frozen GeoLens sensor geometry. Matching the sensor
+            # to the aperture silently changes the field of view.
+            sensor_size = tuple(self.hybrid_lens.geolens.sensor_size)
+            self.hybrid_lens.set_sensor(
+                sensor_size=sensor_size, sensor_res=sensor_res
+            )
+            self.hybrid_lens.geolens.set_sensor(
+                sensor_size=sensor_size, sensor_res=sensor_res
             )
 
     def train(

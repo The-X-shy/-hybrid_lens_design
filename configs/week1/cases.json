@@ -1,0 +1,74 @@
+{
+  "scope": "week1 S0; single wavelength; two nontrivial cases",
+  "units": "mm, radians, optical power; physical DOE unchanged when reference grid changes",
+  "seeds": [
+    101,
+    102,
+    103
+  ],
+  "cases": [
+    {
+      "id": "C1",
+      "system": "S0",
+      "wavelength_mm": 0.0007,
+      "doe_pixels": [
+        64,
+        64
+      ],
+      "doe_pitch_mm": 0.0063,
+      "aperture_radius_mm": 0.18,
+      "propagation_mm": 50.0,
+      "sensor_pixels": [
+        64,
+        64
+      ],
+      "sensor_pitch_mm": 0.0063,
+      "initial_phase_file": "configs/week1/C1_initial_phase.npy",
+      "target_file": "configs/week1/C1_target.npy",
+      "phase_scale_rad": 1.0,
+      "loss": "0.5*sum((normalized_intensity-target)^2)+0.1*(1-window_power/input_power)^2",
+      "directions_max": 16,
+      "states_max": 3,
+      "finite_difference_steps_max": 5,
+      "target_source": "analytic Gaussian formula fixed before Ray-Wave/reference calculation",
+      "phase_source": "analytic quadratic focusing with f=55mm"
+    },
+    {
+      "id": "C2",
+      "system": "S0",
+      "wavelength_mm": 0.0007,
+      "doe_pixels": [
+        64,
+        64
+      ],
+      "doe_pitch_mm": 0.0063,
+      "aperture_radius_mm": 0.18,
+      "propagation_mm": 10.0,
+      "sensor_pixels": [
+        64,
+        64
+      ],
+      "sensor_pitch_mm": 0.0063,
+      "initial_phase_file": "configs/week1/C2_initial_phase.npy",
+      "target_file": "configs/week1/C2_target.npy",
+      "phase_scale_rad": 1.0,
+      "loss": "0.5*sum((normalized_intensity-target)^2)+0.1*(1-window_power/input_power)^2",
+      "directions_max": 16,
+      "states_max": 3,
+      "finite_difference_steps_max": 5,
+      "target_source": "analytic Gaussian formula fixed before Ray-Wave/reference calculation",
+      "phase_source": "analytic sinusoidal grating with 8-pixel period"
+    }
+  ],
+  "grid_refinement": [
+    128,
+    192,
+    256
+  ],
+  "window_scale": [
+    1.0,
+    1.5,
+    2.0
+  ],
+  "loss_and_power_convention": "input power is sum of aperture-field intensity times physical pixel area; sensor power is intensity integral over physical window; no per-result renormalization before power comparison"
+}

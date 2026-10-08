@@ -1,0 +1,7 @@
+_extends: exp_f2p8_80mm_e2e_fullsafe.yaml
+
+optimization:
+  freeze_doe: false
+  freeze_geolens: false
+  optics_grad_batches: 1
+  save_network_every: 500

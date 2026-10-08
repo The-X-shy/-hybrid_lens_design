@@ -14,6 +14,7 @@ better image quality than optimizing them separately.
 """
 
 import os
+import shutil
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
@@ -26,6 +27,8 @@ from torchvision.utils import save_image
 # DeepLens imports
 from deeplens.hybridlens import HybridLens
 from deeplens.optics.loss import PSFLoss
+from deeplens.network.reconstruction.nafnet import NAFNet
+from deeplens.network.reconstruction.restormer import Restormer
 from deeplens.network.reconstruction.unet import UNet
 from deeplens.network.dataset import PhotographicDataset
 
@@ -45,6 +48,7 @@ class E2ETrainer:
         hybrid_lens: HybridLens,
         network: nn.Module,
         result_dir: str,
+        source_hybridlens_path: Optional[str] = None,
         freeze_doe: bool = True,
         wavelength: float = 0.55,
         device: torch.device = None,
@@ -62,6 +66,7 @@ class E2ETrainer:
         self.network = network
         self.result_dir = Path(result_dir)
         self.result_dir.mkdir(parents=True, exist_ok=True)
+        self.source_hybridlens_path = source_hybridlens_path
         self.freeze_doe = freeze_doe
         self.wavelength = wavelength
 
@@ -85,6 +90,7 @@ class E2ETrainer:
         hybridlens_path: str,
         result_dir: str,
         network_config: Dict[str, Any] = None,
+        refocus_on_load: bool = True,
         freeze_doe: bool = True,
         wavelength: float = 0.55,
         device: torch.device = None,
@@ -113,8 +119,11 @@ class E2ETrainer:
         # Load HybridLens
         hybrid_lens = HybridLens(filename=hybridlens_path, dtype=torch.float64)
 
-        # Refocus to infinity
-        hybrid_lens.refocus(foc_dist=-10000.0)
+        # Training from a source hybrid lens still expects refocus to infinity,
+        # but evaluating an already-saved E2E checkpoint lens must preserve the
+        # serialized state instead of refocusing again.
+        if refocus_on_load:
+            hybrid_lens.refocus(foc_dist=-10000.0)
 
         # Default network config
         if network_config is None:
@@ -131,6 +140,7 @@ class E2ETrainer:
             hybrid_lens=hybrid_lens,
             network=network,
             result_dir=str(result_dir),
+            source_hybridlens_path=hybridlens_path,
             freeze_doe=freeze_doe,
             wavelength=wavelength,
             device=device,
@@ -164,6 +174,12 @@ class E2ETrainer:
                 if hasattr(config.network.mha, "to_dict")
                 else config.network.mha
             )
+        if hasattr(config.network, "params"):
+            network_config["params"] = (
+                config.network.params.to_dict()
+                if hasattr(config.network.params, "to_dict")
+                else config.network.params
+            )
         if hasattr(config.network, "pretrained") and config.network.pretrained:
             network_config["pretrained"] = config.network.pretrained
 
@@ -188,6 +204,11 @@ class E2ETrainer:
         network_type = network_config.get("type", "UNet").lower()
         in_channels = network_config.get("in_channels", 3)
         out_channels = network_config.get("out_channels", 3)
+        params = network_config.get("params", {})
+        if hasattr(params, "to_dict"):
+            params = params.to_dict()
+        if not isinstance(params, dict):
+            params = {}
 
         if network_type == "unet":
             network = UNet(in_channels=in_channels, out_channels=out_channels)
@@ -203,6 +224,28 @@ class E2ETrainer:
                 else None,
                 dropout=float(mha_cfg.get("dropout", 0.0)),
             )
+        elif network_type == "nafnet":
+            network = NAFNet(
+                in_chan=in_channels,
+                out_chan=out_channels,
+                width=int(params.get("width", 32)),
+                middle_blk_num=int(params.get("middle_blk_num", 1)),
+                enc_blk_nums=list(params.get("enc_blk_nums", [1, 1, 1, 28])),
+                dec_blk_nums=list(params.get("dec_blk_nums", [1, 1, 1, 1])),
+            )
+        elif network_type == "restormer":
+            network = Restormer(
+                inp_channels=in_channels,
+                out_channels=out_channels,
+                dim=int(params.get("dim", 48)),
+                num_blocks=list(params.get("num_blocks", [4, 6, 6, 8])),
+                num_refinement_blocks=int(params.get("num_refinement_blocks", 4)),
+                heads=list(params.get("heads", [1, 2, 4, 8])),
+                ffn_expansion_factor=float(params.get("ffn_expansion_factor", 2.66)),
+                bias=bool(params.get("bias", False)),
+                LayerNorm_type=str(params.get("LayerNorm_type", "WithBias")),
+                dual_pixel_task=bool(params.get("dual_pixel_task", False)),
+            )
         else:
             raise ValueError(f"Unsupported network type: {network_type}")
 
@@ -216,11 +259,11 @@ class E2ETrainer:
         return network
 
     def setup_sensor(
-        self, match_aperture: bool = True, sensor_res: Tuple[int, int] = (2000, 2000)
+        self, match_aperture: bool = False, sensor_res: Tuple[int, int] = (2000, 2000)
     ):
         """
-        Setup sensor size to match aperture.
-        设置传感器大小以匹配光圈
+        Configure sensor geometry. By default preserve the loaded GeoLens sensor.
+        默认保留输入折射镜头的传感器尺寸
         """
         if match_aperture:
             aper_r = self.hybrid_lens.geolens.surfaces[
@@ -232,6 +275,14 @@ class E2ETrainer:
             )
             self.hybrid_lens.geolens.set_sensor(
                 sensor_size=new_sensor_size, sensor_res=sensor_res
+            )
+        else:
+            sensor_size = tuple(self.hybrid_lens.geolens.sensor_size)
+            self.hybrid_lens.set_sensor(
+                sensor_size=sensor_size, sensor_res=sensor_res
+            )
+            self.hybrid_lens.geolens.set_sensor(
+                sensor_size=sensor_size, sensor_res=sensor_res
             )
 
     def _simulate_image(
@@ -252,7 +303,8 @@ class E2ETrainer:
         """
         # Prepare PSF for convolution
         psf = psf.unsqueeze(0).unsqueeze(0)  # [1, 1, ks, ks]
-        psf = psf.repeat(3, 1, 1, 1)  # [3, 1, ks, ks]
+        channels = clean_image.shape[1]
+        psf = psf.repeat(channels, 1, 1, 1)
         psf = psf.float()
 
         # Pad image for convolution
@@ -263,7 +315,7 @@ class E2ETrainer:
         degraded = F.conv2d(
             padded_image,
             psf,
-            groups=3,
+            groups=channels,
             padding=0,
         )
 
@@ -287,9 +339,47 @@ class E2ETrainer:
         except Exception:
             return []
 
+    def _get_geolens_param_groups(
+        self,
+        lens_lr: List[float],
+        lr_decay: float,
+    ) -> List[Dict[str, Any]]:
+        return self.hybrid_lens.geolens.get_optimizer_params(
+            lrs=lens_lr,
+            decay=lr_decay,
+            optim_mat=False,
+        )
+
+    @staticmethod
+    def _set_param_requires_grad(
+        param_groups: List[Dict[str, Any]],
+        requires_grad: bool,
+    ) -> None:
+        params = E2ETrainer._flatten_param_groups(param_groups)
+        for param in params:
+            if isinstance(param, torch.Tensor):
+                param.requires_grad = requires_grad
+
+    @staticmethod
+    def _resolve_training_mode(freeze_doe: bool, freeze_geolens: bool) -> str:
+        if freeze_doe and freeze_geolens:
+            return "network_only"
+        if freeze_doe and not freeze_geolens:
+            return "refractive_only"
+        if not freeze_doe and freeze_geolens:
+            return "doe_only"
+        return "joint"
+
     def _capture_doe_state(self) -> Dict[str, torch.Tensor]:
         state = {}
-        candidate_keys = ["alpha2", "alpha4", "alpha6", "alpha8", "alpha10", "phase_map"]
+        candidate_keys = [
+            "alpha2",
+            "alpha4",
+            "alpha6",
+            "alpha8",
+            "alpha10",
+            "phase_map",
+        ]
         for key in candidate_keys:
             if hasattr(self.hybrid_lens.doe, key):
                 value = getattr(self.hybrid_lens.doe, key)
@@ -310,6 +400,22 @@ class E2ETrainer:
             mode=str(cfg.get("mode", default_mode)),
         )
 
+    def _save_input_hybridlens_snapshot(self) -> Optional[str]:
+        """Persist the E2E input lens used as the evaluation reference."""
+        if not self.source_hybridlens_path:
+            return None
+
+        src_path = Path(self.source_hybridlens_path)
+        if not src_path.is_absolute():
+            src_path = Path.cwd() / src_path
+        src_path = src_path.resolve()
+        if not src_path.exists():
+            return None
+
+        dst_path = self.result_dir / "hybridlens_input.json"
+        shutil.copy2(src_path, dst_path)
+        return str(dst_path)
+
     def train(
         self,
         train_dataset_path: str,
@@ -325,10 +431,16 @@ class E2ETrainer:
         spp: int = 1000000,
         psf_size: int = 101,
         image_size: Tuple[int, int] = (256, 256),
+        color_mode: str = "rgb",
         loss_weights: Dict[str, float] = None,
         freeze_doe: Optional[bool] = None,
+        freeze_geolens: bool = False,
+        freeze_network: bool = False,
         wavelength: Optional[float] = None,
         early_stop_config: Optional[Dict[str, Any]] = None,
+        save_network_every: Optional[int] = None,
+        optics_grad_batches: Optional[int] = None,
+        save_validation_best: bool = False,
     ) -> Dict[str, List[float]]:
         """
         Train the E2E system by jointly optimizing HybridLens and neural network.
@@ -349,8 +461,11 @@ class E2ETrainer:
             image_size: Training image size
             loss_weights: Weights for different loss terms
             freeze_doe: Whether to freeze DOE parameters during E2E training
+            freeze_geolens: Whether to freeze refractive lens parameters
             wavelength: Single wavelength used for PSF/rendering
             early_stop_config: Early stop settings
+            optics_grad_batches: Number of batches per epoch that backpropagate
+                through optics. If optics are trainable, defaults to 1.
 
         Returns:
             Dictionary of loss histories
@@ -358,10 +473,14 @@ class E2ETrainer:
         hybrid_lens = self.hybrid_lens
         network = self.network
         freeze_doe = self.freeze_doe if freeze_doe is None else freeze_doe
+        freeze_network = bool(freeze_network)
         wavelength = self.wavelength if wavelength is None else wavelength
         self.freeze_doe = freeze_doe
         self.wavelength = wavelength
-        self.logger.mode = "freeze_doe" if freeze_doe else "joint"
+        training_mode = self._resolve_training_mode(
+            freeze_doe=freeze_doe, freeze_geolens=freeze_geolens
+        )
+        self.logger.mode = training_mode
         self.logger.wavelength = wavelength
 
         # Default loss weights
@@ -373,7 +492,15 @@ class E2ETrainer:
             }
 
         # Create dataset and dataloader
-        train_dataset = PhotographicDataset(
+        if color_mode in {"grayscale", "grayscale_luminance", "luminance"}:
+            from paper_exp.data.grayscale_dataset import GrayscalePhotographicDataset
+
+            dataset_class = GrayscalePhotographicDataset
+        elif color_mode == "rgb":
+            dataset_class = PhotographicDataset
+        else:
+            raise ValueError(f"Unsupported color_mode: {color_mode}")
+        train_dataset = dataset_class(
             img_dir=train_dataset_path,
             img_res=image_size,
             is_train=True,
@@ -387,7 +514,7 @@ class E2ETrainer:
         )
 
         if val_dataset_path:
-            val_dataset = PhotographicDataset(
+            val_dataset = dataset_class(
                 img_dir=val_dataset_path,
                 img_res=image_size,
                 is_train=False,
@@ -403,38 +530,54 @@ class E2ETrainer:
 
         # Create optimizers
         doe_state_before = self._capture_doe_state()
-        if freeze_doe:
-            doe_params = self._get_doe_trainable_params(doe_lr=doe_lr)
-            for p in doe_params:
-                p.requires_grad = False
-            lens_param_groups = hybrid_lens.geolens.get_optimizer_params(
-                lrs=lens_lr,
-                decay=lr_decay,
-                optim_mat=False,
-            )
-            lens_optimizer = torch.optim.Adam(lens_param_groups)
-        else:
-            doe_params = self._get_doe_trainable_params(doe_lr=doe_lr)
-            for p in doe_params:
-                p.requires_grad = True
-            lens_optimizer = hybrid_lens.get_optimizer(
-                doe_lr=doe_lr,
-                lens_lr=lens_lr,
-                lr_decay=lr_decay,
+        doe_params = self._get_doe_trainable_params(doe_lr=doe_lr)
+        for p in doe_params:
+            p.requires_grad = not freeze_doe
+
+        geolens_param_groups = self._get_geolens_param_groups(
+            lens_lr=lens_lr, lr_decay=lr_decay
+        )
+        self._set_param_requires_grad(
+            geolens_param_groups, requires_grad=not freeze_geolens
+        )
+
+        lens_param_groups: List[Dict[str, Any]] = []
+        if not freeze_geolens:
+            lens_param_groups.extend(geolens_param_groups)
+        if not freeze_doe:
+            lens_param_groups.extend(
+                self.hybrid_lens.doe.get_optimizer_params(lr=doe_lr)
             )
 
+        lens_optimizer = (
+            torch.optim.Adam(lens_param_groups) if lens_param_groups else None
+        )
+
         # Network optimizer
-        network_optimizer = torch.optim.Adam(
-            network.parameters(),
-            lr=network_lr,
+        for param in network.parameters():
+            param.requires_grad = not freeze_network
+
+        trainable_network_params = [
+            param for param in network.parameters() if param.requires_grad
+        ]
+        network_optimizer = (
+            torch.optim.Adam(trainable_network_params, lr=network_lr)
+            if trainable_network_params
+            else None
         )
 
         # Learning rate schedulers
-        lens_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            lens_optimizer, T_max=epochs
+        lens_scheduler = (
+            torch.optim.lr_scheduler.CosineAnnealingLR(lens_optimizer, T_max=epochs)
+            if lens_optimizer is not None
+            else None
         )
-        network_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            network_optimizer, T_max=epochs
+        network_scheduler = (
+            torch.optim.lr_scheduler.CosineAnnealingLR(
+                network_optimizer, T_max=epochs
+            )
+            if network_optimizer is not None
+            else None
         )
 
         # Loss functions
@@ -458,12 +601,18 @@ class E2ETrainer:
         print("=" * 60)
         print(f"Network type: {type(network).__name__}")
         print(f"Training images: {len(train_dataset)}")
+        print(f"Color mode: {color_mode}")
         print(f"Batch size: {batch_size}")
         print(f"Epochs: {epochs}")
         print(f"PSF size: {psf_size}x{psf_size}")
         print(f"Wavelength: {wavelength} um")
         print(f"Freeze DOE: {freeze_doe}")
+        print(f"Freeze GeoLens: {freeze_geolens}")
+        print(f"Freeze Network: {freeze_network}")
+        print(f"Training mode: {training_mode}")
         print(f"Loss weights: {loss_weights}")
+
+        input_snapshot = self._save_input_hybridlens_snapshot()
 
         self.logger.log_event(
             event="train_start",
@@ -472,6 +621,8 @@ class E2ETrainer:
                 "val_dataset_path": val_dataset_path,
                 "epochs": epochs,
                 "batch_size": batch_size,
+                "color_mode": color_mode,
+                "save_validation_best": bool(save_validation_best),
                 "network_lr": network_lr,
                 "doe_lr": doe_lr,
                 "lens_lr": lens_lr,
@@ -480,10 +631,20 @@ class E2ETrainer:
                 "psf_size": psf_size,
                 "wavelength": wavelength,
                 "freeze_doe": freeze_doe,
+                "freeze_geolens": freeze_geolens,
+                "freeze_network": freeze_network,
+                "training_mode": training_mode,
+                "input_hybridlens_snapshot": input_snapshot,
             },
         )
         early_stopper = self._build_early_stopper(early_stop_config, default_mode="min")
         monitor_key = str((early_stop_config or {}).get("monitor", "total"))
+        if monitor_key.startswith("val_") and val_loader is None:
+            raise ValueError(
+                f"Validation loader is required when monitoring {monitor_key}"
+            )
+        if save_validation_best and val_loader is None:
+            raise ValueError("Validation loader is required to save validation best")
         if early_stopper.enabled:
             self.logger.log_event(
                 event="early_stop_enabled",
@@ -501,19 +662,30 @@ class E2ETrainer:
             "mse": [],
             "lpips": [],
             "psf": [],
+            "val_mse": [],
         }
+        best_validation_mse = None
+        best_validation_epoch = None
         min_coherent_spp = 1_000_000
         effective_spp = max(int(spp), min_coherent_spp)
+        optics_trainable = lens_optimizer is not None
+        optics_grad_batches = (
+            0
+            if not optics_trainable
+            else max(1, int(optics_grad_batches or 1))
+        )
         psf_refresh_epochs = max(1, int(test_per_epoch))
         cached_psf = None
         cached_psf_loss = None
 
         # Training loop
         for epoch in range(start_epoch, epochs):
-            network.train()
+            network.train(not freeze_network)
             epoch_losses = {"total": 0, "mse": 0, "lpips": 0, "psf": 0}
             num_batches = 0
-            if cached_psf is None or (epoch % psf_refresh_epochs == 0):
+            if not optics_trainable and (
+                cached_psf is None or (epoch % psf_refresh_epochs == 0)
+            ):
                 with torch.no_grad():
                     cached_psf = hybrid_lens.psf(
                         points=[0.0, 0.0, -10000.0],
@@ -530,16 +702,47 @@ class E2ETrainer:
                         cached_psf_loss = None
 
             pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}")
-            for batch in pbar:
+            cached_psf = cached_psf if not optics_trainable else None
+            cached_psf_loss = cached_psf_loss if not optics_trainable else None
+            for batch_idx, batch in enumerate(pbar):
                 # Get clean images
                 if isinstance(batch, dict):
                     clean_images = batch["img"].to(self.device)
                 else:
                     clean_images = batch.to(self.device)
 
-                # Reuse cached PSF to keep training throughput practical while
-                # satisfying coherent ray-tracing sample constraints.
-                psf = cached_psf
+                use_optics_grad = optics_trainable and batch_idx < optics_grad_batches
+                if use_optics_grad:
+                    psf = hybrid_lens.psf(
+                        points=[0.0, 0.0, -10000.0],
+                        ks=psf_size,
+                        wvln=wavelength,
+                        spp=effective_spp,
+                    )
+                    if loss_weights.get("psf", 0) > 0:
+                        psf_input = psf.unsqueeze(0).unsqueeze(0)
+                        if psf_input.shape[1] == 1:
+                            psf_input = psf_input.repeat(1, 3, 1, 1)
+                        loss_psf = psf_loss_fn(psf_input)
+                    else:
+                        loss_psf = torch.tensor(0.0, device=self.device)
+                else:
+                    if cached_psf is None:
+                        with torch.no_grad():
+                            cached_psf = hybrid_lens.psf(
+                                points=[0.0, 0.0, -10000.0],
+                                ks=psf_size,
+                                wvln=wavelength,
+                                spp=effective_spp,
+                            )
+                            if loss_weights.get("psf", 0) > 0:
+                                psf_input = cached_psf.unsqueeze(0).unsqueeze(0)
+                                if psf_input.shape[1] == 1:
+                                    psf_input = psf_input.repeat(1, 3, 1, 1)
+                                cached_psf_loss = psf_loss_fn(psf_input).detach()
+                            else:
+                                cached_psf_loss = None
+                    psf = cached_psf
 
                 # Simulate degraded images
                 degraded_images = self._simulate_image(clean_images.float(), psf)
@@ -554,21 +757,27 @@ class E2ETrainer:
 
                 # LPIPS loss
                 if use_lpips and loss_weights.get("lpips", 0) > 0:
+                    lpips_reconstructed = reconstructed_images
+                    lpips_clean = clean_images.float()
+                    if lpips_reconstructed.shape[1] == 1:
+                        lpips_reconstructed = lpips_reconstructed.repeat(1, 3, 1, 1)
+                        lpips_clean = lpips_clean.repeat(1, 3, 1, 1)
                     loss_lpips = lpips_loss_fn(
-                        reconstructed_images, clean_images.float()
+                        lpips_reconstructed, lpips_clean
                     ).mean()
                 else:
                     loss_lpips = torch.tensor(0.0, device=self.device)
 
                 # PSF loss (encourage compact PSF)
-                if loss_weights.get("psf", 0) > 0:
-                    loss_psf = (
-                        cached_psf_loss.to(self.device)
-                        if cached_psf_loss is not None
-                        else torch.tensor(0.0, device=self.device)
-                    )
-                else:
-                    loss_psf = torch.tensor(0.0, device=self.device)
+                if not use_optics_grad:
+                    if loss_weights.get("psf", 0) > 0:
+                        loss_psf = (
+                            cached_psf_loss.to(self.device)
+                            if cached_psf_loss is not None
+                            else torch.tensor(0.0, device=self.device)
+                        )
+                    else:
+                        loss_psf = torch.tensor(0.0, device=self.device)
 
                 # Total loss
                 total_loss = (
@@ -578,11 +787,15 @@ class E2ETrainer:
                 )
 
                 # Backward and optimize
-                lens_optimizer.zero_grad()
-                network_optimizer.zero_grad()
+                if lens_optimizer is not None:
+                    lens_optimizer.zero_grad()
+                if network_optimizer is not None:
+                    network_optimizer.zero_grad()
                 total_loss.backward()
-                lens_optimizer.step()
-                network_optimizer.step()
+                if lens_optimizer is not None and use_optics_grad:
+                    lens_optimizer.step()
+                if network_optimizer is not None:
+                    network_optimizer.step()
 
                 # Record losses
                 epoch_losses["total"] += total_loss.item()
@@ -597,8 +810,10 @@ class E2ETrainer:
                 )
 
             # Update learning rates
-            lens_scheduler.step()
-            network_scheduler.step()
+            if lens_scheduler is not None:
+                lens_scheduler.step()
+            if network_scheduler is not None:
+                network_scheduler.step()
 
             # Average epoch losses
             for key in epoch_losses:
@@ -619,13 +834,78 @@ class E2ETrainer:
                     "psf": float(epoch_losses["psf"]),
                 },
                 lr={
-                    "lens": float(lens_scheduler.get_last_lr()[0]),
-                    "network": float(network_scheduler.get_last_lr()[0]),
+                    "lens": float(lens_scheduler.get_last_lr()[0])
+                    if lens_scheduler is not None
+                    else 0.0,
+                    "network": float(network_scheduler.get_last_lr()[0])
+                    if network_scheduler is not None
+                    else 0.0,
                 },
-                extra={"freeze_doe": freeze_doe, "wavelength": wavelength},
+                extra={
+                    "freeze_doe": freeze_doe,
+                    "freeze_geolens": freeze_geolens,
+                    "freeze_network": freeze_network,
+                    "wavelength": wavelength,
+                    "training_mode": training_mode,
+                    "optics_grad_batches": optics_grad_batches,
+                },
             )
-            monitor_val = float(epoch_losses.get(monitor_key, epoch_losses["total"]))
-            if early_stopper.update(monitor_val, step=epoch + 1):
+            stop_training = False
+            if not monitor_key.startswith("val_"):
+                monitor_val = float(
+                    epoch_losses.get(monitor_key, epoch_losses["total"])
+                )
+                stop_training = early_stopper.update(
+                    monitor_val, step=epoch + 1
+                )
+
+            # Periodic evaluation and saving
+            if (epoch + 1) % test_per_epoch == 0:
+                should_save_network = (save_network_every is None) or (
+                    (epoch + 1) % save_network_every == 0
+                )
+                self._save_checkpoint(
+                    epoch + 1,
+                    psf_size,
+                    spp,
+                    wavelength,
+                    save_network=should_save_network,
+                )
+
+                if val_loader:
+                    val_loss = self._validate(val_loader, psf_size, spp, wavelength)
+                    loss_history["val_mse"].append(float(val_loss))
+                    print(f"Validation MSE: {val_loss:.4f}")
+                    self.logger.log_metric(
+                        epoch=epoch + 1,
+                        metrics={"val_mse": float(val_loss)},
+                        extra={"substage": "validation"},
+                    )
+                    is_validation_best = (
+                        best_validation_mse is None
+                        or val_loss < best_validation_mse
+                    )
+                    if is_validation_best:
+                        best_validation_mse = float(val_loss)
+                        best_validation_epoch = epoch + 1
+                        if save_validation_best:
+                            self._save_checkpoint(
+                                "best", psf_size, spp, wavelength, save_network=True
+                            )
+                        self.logger.log_event(
+                            event="validation_best",
+                            payload={
+                                "epoch": epoch + 1,
+                                "val_mse": float(val_loss),
+                                "checkpoint_saved": bool(save_validation_best),
+                            },
+                        )
+                    if monitor_key == "val_mse":
+                        stop_training = early_stopper.update(
+                            float(val_loss), step=epoch + 1
+                        )
+
+            if stop_training:
                 self.logger.log_event(
                     event="early_stop_triggered",
                     payload={
@@ -639,20 +919,6 @@ class E2ETrainer:
                     f"best {monitor_key}={early_stopper.best:.6f}"
                 )
                 break
-
-            # Periodic evaluation and saving
-            if (epoch + 1) % test_per_epoch == 0:
-                self._save_checkpoint(epoch + 1, psf_size, spp, wavelength)
-
-                # Validation
-                if val_loader:
-                    val_loss = self._validate(val_loader, psf_size, spp, wavelength)
-                    print(f"Validation MSE: {val_loss:.4f}")
-                    self.logger.log_metric(
-                        epoch=epoch + 1,
-                        metrics={"val_mse": float(val_loss)},
-                        extra={"substage": "validation"},
-                    )
 
         # Save final model
         self._save_checkpoint("final", psf_size, spp, wavelength)
@@ -684,9 +950,18 @@ class E2ETrainer:
                 else None,
                 "improvement_percent": float(improvement),
                 "freeze_doe": freeze_doe,
+                "freeze_geolens": freeze_geolens,
+                "freeze_network": freeze_network,
                 "wavelength": float(wavelength),
                 "doe_change_max_abs": float(doe_change_max),
+                "training_mode": training_mode,
+                "optics_grad_batches": int(optics_grad_batches),
                 "network_type": type(network).__name__,
+                "color_mode": color_mode,
+                "best_validation_mse": best_validation_mse,
+                "best_validation_epoch": best_validation_epoch,
+                "validation_best_saved": bool(save_validation_best),
+                "input_hybridlens_snapshot": input_snapshot,
             }
         )
 
@@ -735,14 +1010,22 @@ class E2ETrainer:
 
         return total_loss / num_batches
 
-    def _save_checkpoint(self, epoch, psf_size: int, spp: int, wavelength: float):
+    def _save_checkpoint(
+        self,
+        epoch,
+        psf_size: int,
+        spp: int,
+        wavelength: float,
+        save_network: bool = True,
+    ):
         """Save checkpoint including lens, network, and visualizations."""
         try:
-            # Save network weights
-            torch.save(
-                self.network.state_dict(),
-                str(self.result_dir / f"network_epoch{epoch}.pth"),
-            )
+            # Save network weights (conditionally)
+            if save_network:
+                torch.save(
+                    self.network.state_dict(),
+                    str(self.result_dir / f"network_epoch{epoch}.pth"),
+                )
 
             # Save lens configuration
             self.hybrid_lens.write_lens_json(
@@ -795,6 +1078,7 @@ def create_e2e_trainer(
     result_dir: str,
     doe_type: str = "binary2",
     network_type: str = "unet",
+    network_params: Optional[Dict[str, Any]] = None,
     freeze_doe: bool = True,
     wavelength: float = 0.55,
     device: torch.device = None,
@@ -807,7 +1091,8 @@ def create_e2e_trainer(
         geolens_path: Path to optimized GeoLens JSON file
         result_dir: Directory to save results
         doe_type: DOE type ("binary2" or "pixel2d")
-        network_type: Network type ("unet")
+        network_type: Network type ("unet", "nafnet", "restormer")
+        network_params: Optional constructor parameters for the network
         freeze_doe: Whether to freeze DOE in E2E stage
         wavelength: Wavelength for PSF/rendering in E2E stage
         device: PyTorch device
@@ -847,6 +1132,9 @@ def create_e2e_trainer(
         "in_channels": 3,
         "out_channels": 3,
     }
+    if network_params is not None:
+        network_config["params"] = network_params
+
     network = E2ETrainer._create_network(network_config)
 
     return E2ETrainer(

@@ -87,7 +87,7 @@ def build_doc(
 
     lines.append("## 实验目标与参数")
     lines.append("")
-    lines.append("- 折射：foclen=80mm, fnum=2.8, FOV=70°")
+    lines.append("- 折射：foclen=8mm, fnum=2.8, FOV=70°")
     lines.append("- 轮数：GeoLens(3000+3000), Hybrid(5000), E2E(5000), Meta(4000)")
     lines.append("- 早停：patience=500, min_delta=1e-6")
     lines.append("")

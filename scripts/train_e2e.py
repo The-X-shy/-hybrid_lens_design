@@ -51,8 +51,12 @@ def parse_args():
     )
 
     # Override config options
-    parser.add_argument("--start_epoch", type=int, default=0, help="Epoch to start from (for resuming)")
-    parser.add_argument("--pretrained", type=str, help="Path to pretrained network weights")
+    parser.add_argument(
+        "--start_epoch", type=int, default=0, help="Epoch to start from (for resuming)"
+    )
+    parser.add_argument(
+        "--pretrained", type=str, help="Path to pretrained network weights"
+    )
     parser.add_argument("--epochs", type=int, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, help="Batch size")
     parser.add_argument("--network_lr", type=float, help="Network learning rate")
@@ -64,9 +68,21 @@ def parse_args():
         help="Freeze DOE parameters in E2E stage (1=true, 0=false)",
     )
     parser.add_argument(
+        "--freeze_geolens",
+        type=int,
+        choices=[0, 1],
+        help="Freeze refractive lens parameters in E2E stage (1=true, 0=false)",
+    )
+    parser.add_argument(
+        "--freeze_network",
+        type=int,
+        choices=[0, 1],
+        help="Freeze reconstruction network parameters in E2E stage (1=true, 0=false)",
+    )
+    parser.add_argument(
         "--network_type",
         type=str,
-        choices=["unet", "mha_unet"],
+        choices=["unet", "mha_unet", "nafnet", "restormer"],
         help="Network type for E2E reconstruction",
     )
     parser.add_argument(
@@ -77,7 +93,17 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, help="Output directory")
     parser.add_argument("--seed", type=int, help="Random seed")
     parser.add_argument(
+        "--save_network_every",
+        type=int,
+        help="Save network .pth every N epochs (default: save every test_per_epoch)",
+    )
+    parser.add_argument(
         "--device", type=str, choices=["cuda", "cpu", "mps"], help="Device"
+    )
+    parser.add_argument(
+        "--optics_grad_batches",
+        type=int,
+        help="Number of batches per epoch that backpropagate through optics",
     )
 
     return parser.parse_args()
@@ -108,10 +134,18 @@ def main():
         config.optimization.doe_lr = args.doe_lr
     if args.freeze_doe is not None:
         set_nested(config, "optimization.freeze_doe", bool(args.freeze_doe))
+    if args.freeze_geolens is not None:
+        set_nested(config, "optimization.freeze_geolens", bool(args.freeze_geolens))
+    if args.freeze_network is not None:
+        set_nested(config, "optimization.freeze_network", bool(args.freeze_network))
     if args.network_type:
         set_nested(config, "network.type", args.network_type)
     if args.wavelength:
         set_nested(config, "optimization.wavelength", float(args.wavelength))
+    if args.optics_grad_batches is not None:
+        set_nested(
+            config, "optimization.optics_grad_batches", int(args.optics_grad_batches)
+        )
     if args.output_dir:
         set_nested(config, "output.dir", args.output_dir)
     if args.seed:
@@ -133,7 +167,14 @@ def main():
     print(f"Network type: {config.network.type}")
     print(f"Training dataset: {config.dataset.train_path}")
     print(f"Freeze DOE: {get_nested(config, 'optimization.freeze_doe', True)}")
+    print(
+        f"Freeze GeoLens: {get_nested(config, 'optimization.freeze_geolens', False)}"
+    )
     print(f"Wavelength: {get_nested(config, 'optimization.wavelength', 0.55)} um")
+    print(
+        "Optics grad batches: "
+        f"{get_nested(config, 'optimization.optics_grad_batches', None)}"
+    )
 
     # Create result directory
     result_dir = create_result_dir(config)
@@ -151,6 +192,12 @@ def main():
             config.network.mha.to_dict()
             if hasattr(config.network.mha, "to_dict")
             else config.network.mha
+        )
+    if hasattr(config.network, "params"):
+        network_config["params"] = (
+            config.network.params.to_dict()
+            if hasattr(config.network.params, "to_dict")
+            else config.network.params
         )
     if hasattr(config.network, "pretrained") and config.network.pretrained:
         network_config["pretrained"] = config.network.pretrained
@@ -184,6 +231,7 @@ def main():
             print("Attempting to download BSDS300...")
             from deeplens.network.dataset import download_bsd300
 
+            os.makedirs("./datasets", exist_ok=True)
             output_image_dir = download_bsd300("./datasets")
             candidate_train = os.path.join(output_image_dir, "train", "images")
             candidate_test = os.path.join(output_image_dir, "test", "images")
@@ -197,7 +245,11 @@ def main():
             if not val_path and os.path.exists(candidate_test):
                 val_path = candidate_test
                 config.dataset.val_path = val_path
-            elif val_path and not os.path.exists(val_path) and os.path.exists(candidate_test):
+            elif (
+                val_path
+                and not os.path.exists(val_path)
+                and os.path.exists(candidate_test)
+            ):
                 val_path = candidate_test
                 config.dataset.val_path = val_path
             print(f"BSDS300 ready. train={train_path}, val={val_path}")
@@ -219,10 +271,21 @@ def main():
         spp=getattr(config.optimization, "spp", 100000),
         psf_size=getattr(config.optimization, "psf_size", 101),
         image_size=image_size,
+        color_mode=get_nested(config, "dataset.color_mode", "rgb"),
         loss_weights=loss_weights,
         freeze_doe=get_nested(config, "optimization.freeze_doe", True),
+        freeze_geolens=get_nested(config, "optimization.freeze_geolens", False),
+        freeze_network=get_nested(config, "optimization.freeze_network", False),
         wavelength=get_nested(config, "optimization.wavelength", 0.55),
         early_stop_config=get_nested(config, "optimization.early_stop", None),
+        save_network_every=args.save_network_every
+        or getattr(config.optimization, "save_network_every", None),
+        optics_grad_batches=get_nested(
+            config, "optimization.optics_grad_batches", None
+        ),
+        save_validation_best=bool(
+            get_nested(config, "optimization.save_validation_best", False)
+        ),
     )
 
     # Print final results

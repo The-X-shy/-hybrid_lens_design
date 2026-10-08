@@ -1,0 +1,37 @@
+{
+  "spec_version": "1.1",
+  "project": "/mnt/d/hybrid_lens_design",
+  "upstream": "/mnt/d/我的文档/deeplens/raywave-tracing",
+  "python": "/home/ysl/miniconda3/envs/nami-pt22/bin/python",
+  "host_commit": "dc83fa52901483f28ff35aa85b5435a1bfc59c44",
+  "upstream_commit": "777e753be7778b09bf13fb55c633a56ac4ad04e5",
+  "budget": {
+    "max_gpu_device_hours": 8,
+    "max_cpu_wall_hours": 4,
+    "max_run_minutes": 30,
+    "max_attempts": 24,
+    "max_retries": 4
+  },
+  "groups": {
+    "W0-U": [],
+    "W0-I": [
+      {
+        "run_id": "w0i-lens-host-02",
+        "group": "W0-I",
+        "gate": "G0-I",
+        "case": "lens",
+        "backend_mode": "integrated",
+        "pair_id": "g0i-lens",
+        "variant": "integration_pair",
+        "optics_config": "configs/week1/integration/lens.json",
+        "optimization_config": "configs/week1/integration/lens.json",
+        "seed": 103,
+        "max_minutes": 5,
+        "sample_source_run": "w0i-lens-up"
+      }
+    ],
+    "W1-REF": [],
+    "W1-CHECK": []
+  },
+  "integration_protocol_sha256": "a58ea09fd26969ccf274c583addd8fd6585bcc69e81f22764eb3f759d250bfe3"
+}

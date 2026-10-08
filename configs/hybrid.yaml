@@ -19,6 +19,7 @@ doe:
   type: "binary2"
   res: [1000, 1000]
   fab_ps: 0.003        # 3um 像素尺寸
+  fab_step: 16         # 16-level phase quantization
   is_square: true
   param_model: "binary2"
   # 初始多项式系数
@@ -57,5 +58,5 @@ optimization:
 # Sensor 配置
 # =============================================================================
 sensor:
-  match_aperture: true  # 使 sensor 大小与光圈匹配
+  match_aperture: false # 保留输入镜头传感器，避免改变视场
   res: [2000, 2000]     # sensor 分辨率

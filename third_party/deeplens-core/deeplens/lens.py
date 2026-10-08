@@ -100,9 +100,9 @@ class Lens(DeepObj):
         if not hasattr(self, "foclen"):
             return
 
-        self.vfov = 2 * float(np.atan(self.sensor_size[0] / 2 / self.foclen))
-        self.hfov = 2 * float(np.atan(self.sensor_size[1] / 2 / self.foclen))
-        self.dfov = 2 * float(np.atan(self.r_sensor / self.foclen))
+        self.vfov = 2 * float(np.arctan(self.sensor_size[0] / 2 / self.foclen))
+        self.hfov = 2 * float(np.arctan(self.sensor_size[1] / 2 / self.foclen))
+        self.dfov = 2 * float(np.arctan(self.r_sensor / self.foclen))
         self.rfov = self.dfov / 2  # radius (half diagonal) FoV
 
     # ===========================================

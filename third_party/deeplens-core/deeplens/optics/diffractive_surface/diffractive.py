@@ -96,7 +96,8 @@ class DiffractiveSurface(DeepObj):
 
         # Phase wrapping and quantization
         phase0 = torch.remainder(phase0, 2 * torch.pi)
-        phase0 = diff_quantize(phase0, levels=self.fab_step)
+        if self.fab_step is not None:
+            phase0 = diff_quantize(phase0, levels=self.fab_step)
         return phase0
 
     def get_phase_map(self, wvln):
@@ -382,6 +383,8 @@ class DiffractiveSurface(DeepObj):
             "d": round(self.d.item(), 4),
             "wvln0": round(self.wvln0, 4),
             "res": self.res,
+            "fab_ps": self.fab_ps,
+            "fab_step": self.fab_step,
             "is_square": True,
         }
 

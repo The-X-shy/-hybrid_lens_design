@@ -1,0 +1,7 @@
+_extends: exp_f2p8_80mm_e2e_fullsafe.yaml
+
+network:
+  type: "unet"
+
+optimization:
+  save_network_every: 500

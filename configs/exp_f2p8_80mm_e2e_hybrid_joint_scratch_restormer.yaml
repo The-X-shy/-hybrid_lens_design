@@ -1,0 +1,24 @@
+_extends: exp_f2p8_80mm_e2e_fullsafe.yaml
+
+lens:
+  source: "file"
+  file_path: "results/geolens8mm_1200_final/02_hybrid/hybridlens_final.json"
+
+network:
+  type: "restormer"
+  params:
+    dim: 48
+    num_blocks: [4, 6, 6, 8]
+    num_refinement_blocks: 4
+    heads: [1, 2, 4, 8]
+    ffn_expansion_factor: 2.66
+    bias: false
+    LayerNorm_type: "WithBias"
+
+optimization:
+  batch_size: 2
+  freeze_doe: false
+  freeze_geolens: false
+  freeze_network: false
+  optics_grad_batches: 1
+  save_network_every: 500

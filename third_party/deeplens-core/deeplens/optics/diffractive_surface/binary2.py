@@ -43,8 +43,8 @@ class Binary2(DiffractiveSurface):
 
     @classmethod
     def init_from_dict(cls, doe_dict):
-        """Initialize Binary DOE from a dict."""
-        return cls(
+        """Initialize Binary DOE from a dict, including optimized coefficients."""
+        surface = cls(
             d=doe_dict["d"],
             res=doe_dict["res"],
             mat=doe_dict.get("mat", "fused_silica"),
@@ -52,6 +52,12 @@ class Binary2(DiffractiveSurface):
             fab_ps=doe_dict.get("fab_ps", 0.001),
             fab_step=doe_dict.get("fab_step", 16),
         )
+        with torch.no_grad():
+            for order in (2, 4, 6, 8, 10):
+                key = f"alpha{order}"
+                if key in doe_dict:
+                    getattr(surface, key).fill_(float(doe_dict[key]))
+        return surface
 
     def phase_func(self):
         """Get the phase map at design wavelength."""

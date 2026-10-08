@@ -515,6 +515,12 @@ class GeoLensTrainer:
 
         # Final processing (restore last valid state first if needed)
         self._restore_last_valid_if_needed(context="before_final_processing")
+
+        # Keep the stage-2 result after recovery, before pruning/post-computation.
+        pre_final_foclen = float(self.lens.foclen)
+        pre_final_fnum = float(self.lens.fnum)
+        pre_final_half_fov_deg = float(np.rad2deg(self.lens.rfov))
+
         try:
             self.lens.prune_surf(expand_factor=0.05)
             self.lens.post_computation()
@@ -565,6 +571,9 @@ class GeoLensTrainer:
         self.logger.flush_summary(
             {
                 "mode": self.mode,
+                "pre_final_foclen": pre_final_foclen,
+                "pre_final_fnum": pre_final_fnum,
+                "pre_final_half_fov_deg": pre_final_half_fov_deg,
                 "final_foclen": float(self.lens.foclen),
                 "final_fnum": float(self.lens.fnum),
                 "final_half_fov_deg": float(np.rad2deg(self.lens.rfov)),

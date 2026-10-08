@@ -1,0 +1,11 @@
+target: "/mnt/d/\u6211\u7684\u6587\u6863/deeplens/raywave-tracing/fig6_hybrid_system/smile.png"
+init_phase: /mnt/d/hybrid_lens_design/configs/week1/upstream_micro_v2/initial_phase.npy
+results_dir: OVERRIDDEN_BY_RUNNER
+epochs: 1
+steps_per_epoch: 2
+lr: 10.0
+seed: 101
+two_pass: true
+device: cuda
+dtype: float32
+record_runtime: true

@@ -1,0 +1,4 @@
+_extends: exp_f2p8_80mm_e2e_joint_fixed.yaml
+
+network:
+  type: "unet"
